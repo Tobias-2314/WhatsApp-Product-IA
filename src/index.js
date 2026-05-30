@@ -20,6 +20,7 @@ const http = require('http');
 const bot = require('./bot');
 const sheets = require('./sheets');
 const restaurante = require('../config/restaurant');
+const { manejarAdmin } = require('./admin');
 
 // ─── LOGGER ──────────────────────────────────────────────────
 
@@ -43,11 +44,30 @@ const estadoServicio = {
 };
 
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  const ok = estadoServicio.whatsapp === 'ok' && estadoServicio.sheets === 'ok';
-  res.writeHead(ok ? 200 : 503, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(estadoServicio));
-}).listen(PORT, () => logger.info(`🔍 Health check escuchando en puerto ${PORT}`));
+http.createServer(async (req, res) => {
+  try {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+
+    if (pathname.startsWith('/admin')) {
+      await manejarAdmin(req, res);
+      return;
+    }
+
+    // Health check por defecto
+    const ok = estadoServicio.whatsapp === 'ok' && estadoServicio.sheets === 'ok';
+    res.writeHead(ok ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(estadoServicio));
+  } catch (err) {
+    res.writeHead(500);
+    res.end('Internal Server Error');
+  }
+}).listen(PORT, () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin`));
+
+// ─── UTILIDADES ──────────────────────────────────────────────
+
+// Enmascara un número de teléfono para logs: muestra solo los últimos 4 dígitos.
+// Evita exponer PII en logs de stdout y archivos de log.
+const maskTel = tel => `****${String(tel).slice(-4)}`;
 
 // ─── RATE LIMITING ───────────────────────────────────────────
 // Máximo de mensajes por usuario por ventana de tiempo.
@@ -108,7 +128,7 @@ async function enviarRecordatorios(sock) {
       });
 
       _recordatoriosEnviados.add(reserva.id);
-      logger.info(`📅 Recordatorio enviado a ${reserva.telefono} — reserva ${reserva.id}`);
+      logger.info(`📅 Recordatorio enviado a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
     }
   } catch (error) {
     logger.error(`❌ Error en scheduler de recordatorios: ${error.message}`);
@@ -124,14 +144,14 @@ async function procesarConReintentos(sock, telefono, contenido) {
       await bot.procesarMensaje(telefono, contenido);
       return;
     } catch (error) {
-      logger.error(`❌ Intento ${intento}/${MAX_REINTENTOS} fallido [${telefono}]: ${error.message}`);
+      logger.error(`❌ Intento ${intento}/${MAX_REINTENTOS} fallido [${maskTel(telefono)}]: ${error.message}`);
       if (intento < MAX_REINTENTOS) {
         await new Promise(r => setTimeout(r, intento * 2000)); // 2 s, 4 s
       }
     }
   }
 
-  logger.error(`💀 Mensaje de ${telefono} descartado tras ${MAX_REINTENTOS} reintentos`);
+  logger.error(`💀 Mensaje de ${maskTel(telefono)} descartado tras ${MAX_REINTENTOS} reintentos`);
   try {
     await sock.sendMessage(`${telefono}@s.whatsapp.net`, {
       text: 'Disculpá, tuve un problema técnico. Por favor, escribime de nuevo en un momento. 🙏',
@@ -251,17 +271,18 @@ async function iniciarBot() {
 
       // Rate limiting: ignorar si el usuario excedió el límite de mensajes
       if (estaLimitado(telefono)) {
-        logger.warn(`⚠️ Rate limit alcanzado para ${telefono} — mensaje ignorado`);
+        logger.warn(`⚠️ Rate limit alcanzado para ${maskTel(telefono)} — mensaje ignorado`);
         continue;
       }
 
-      logger.info(`📨 [${telefono}]: ${contenido}`);
+      // Loguear solo suficiente para debuggear: número enmascarado + primeros 40 chars del mensaje
+      logger.info(`📨 [${maskTel(telefono)}]: ${contenido.substring(0, 40)}${contenido.length > 40 ? '…' : ''}`);
 
       try {
         await sock.readMessages([msg.key]);
         await procesarConReintentos(sock, telefono, contenido);
       } catch (error) {
-        logger.error(`❌ Error inesperado con ${telefono}: ${error.message}`);
+        logger.error(`❌ Error inesperado con ${maskTel(telefono)}: ${error.message}`);
         logger.error(error.stack);
       }
     }

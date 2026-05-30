@@ -113,6 +113,26 @@ class SheetsManager {
   // ─── LECTURA ──────────────────────────────────────────────
 
   /**
+   * Devuelve todas las reservas (cualquier estado) para una fecha dada, ordenadas por hora.
+   * Usada por el panel de administración.
+   */
+  async obtenerReservasPorFecha(fecha) {
+    const { filas } = await this._obtenerTodasLasFilas();
+    return filas
+      .filter(fila => fila[COL.FECHA] === fecha)
+      .map(fila => ({
+        id:       fila[COL.ID],
+        telefono: fila[COL.TELEFONO],
+        nombre:   fila[COL.NOMBRE],
+        fecha:    fila[COL.FECHA],
+        hora:     fila[COL.HORA],
+        personas: fila[COL.PERSONAS],
+        estado:   fila[COL.ESTADO],
+      }))
+      .sort((a, b) => a.hora.localeCompare(b.hora));
+  }
+
+  /**
    * Devuelve todas las reservas confirmadas de un número de teléfono.
    */
   async obtenerReservasPorTelefono(telefono) {

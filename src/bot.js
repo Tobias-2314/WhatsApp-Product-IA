@@ -53,7 +53,7 @@ class Bot {
 
     // Si está en modo humano, no procesar automáticamente
     if (sesion.modoHumano) {
-      console.log(`👤 [${telefono}] en modo humano — mensaje no procesado por bot`);
+      console.log(`👤 [****${telefono.slice(-4)}] en modo humano — mensaje no procesado por bot`);
       return;
     }
 
