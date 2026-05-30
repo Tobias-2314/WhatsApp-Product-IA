@@ -19,6 +19,7 @@ const http = require('http');
 
 const bot = require('./bot');
 const sheets = require('./sheets');
+const restaurante = require('../config/restaurant');
 
 // ─── LOGGER ──────────────────────────────────────────────────
 
@@ -82,6 +83,37 @@ setInterval(() => {
 let intentosReconexion = 0;
 const MAX_RECONEXIONES = 5;
 const MAX_REINTENTOS   = 3;
+
+// ─── RECORDATORIOS AUTOMÁTICOS ───────────────────────────────
+// Envía un mensaje 24 horas antes de cada reserva confirmada.
+// Usa un Set en memoria para no duplicar si el bot sigue corriendo.
+// (En un reinicio se puede re-enviar el recordatorio — riesgo aceptable.)
+
+const _recordatoriosEnviados = new Set();
+
+async function enviarRecordatorios(sock) {
+  try {
+    const reservas = await sheets.obtenerReservasProximas(24);
+    for (const reserva of reservas) {
+      if (_recordatoriosEnviados.has(reserva.id)) continue;
+
+      await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
+        text:
+          `🍽️ *¡Recordatorio de reserva!*\n\n` +
+          `Hola ${reserva.nombre}! Te recordamos que mañana tenés una reserva en *${restaurante.nombre}*:\n\n` +
+          `  • 📅 Fecha: ${reserva.fecha}\n` +
+          `  • 🕐 Hora: ${reserva.hora}\n` +
+          `  • 👥 Personas: ${reserva.personas}\n\n` +
+          `Si necesitás cancelar o modificar tu reserva, escribinos. ¡Te esperamos! 😊`,
+      });
+
+      _recordatoriosEnviados.add(reserva.id);
+      logger.info(`📅 Recordatorio enviado a ${reserva.telefono} — reserva ${reserva.id}`);
+    }
+  } catch (error) {
+    logger.error(`❌ Error en scheduler de recordatorios: ${error.message}`);
+  }
+}
 
 // Reintenta procesarMensaje hasta MAX_REINTENTOS veces con backoff lineal.
 // Si todos los intentos fallan, envía un mensaje de disculpa al usuario
@@ -157,6 +189,13 @@ async function iniciarBot() {
       intentosReconexion = 0;
       estadoServicio.whatsapp = 'ok';
       logger.info('✅ ¡Bot conectado a WhatsApp exitosamente!');
+
+      // Arrancar el scheduler de recordatorios solo la primera vez que conecta
+      if (!sock._recordatoriosActivos) {
+        sock._recordatoriosActivos = true;
+        setInterval(() => enviarRecordatorios(sock), 15 * 60_000);
+        logger.info('⏰ Scheduler de recordatorios activo (cada 15 min)');
+      }
     }
 
     if (connection === 'close') {

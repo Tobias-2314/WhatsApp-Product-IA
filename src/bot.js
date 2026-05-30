@@ -69,25 +69,36 @@ class Bot {
     // Enviar a Gemini
     const respuestaAI = await ai.procesarMensaje(sesion, mensaje, franjasDisponibles);
 
-    // Actualizar datos extraídos (no pisar con null lo que ya teníamos)
+    // Actualizar datos extraídos según el tipo de acción.
+    // Las modificaciones van a sesion.modificacion para no contaminar sesion.reservaPendiente.
     if (respuestaAI.extractedData) {
       const { nombre, fecha, hora, personas } = respuestaAI.extractedData;
-      if (nombre) sesion.reservaPendiente.nombre = nombre;
 
-      // Validar fecha: formato DD/MM/YYYY, no en el pasado, dentro del máximo de anticipación
-      if (fecha && this._esFechaValida(fecha)) sesion.reservaPendiente.fecha = fecha;
-
-      // Normalizar hora a la franja horaria más cercana (máx. 60 min de diferencia)
-      if (hora) {
-        const horaFranja = this._normalizarHora(hora);
-        if (horaFranja) sesion.reservaPendiente.hora = horaFranja;
-      }
-
-      // Validar que personas sea entero dentro del rango permitido
-      if (personas) {
-        const p = parseInt(personas, 10);
-        if (!isNaN(p) && p >= 1 && p <= restaurante.maximoPersonasPorReserva) {
-          sesion.reservaPendiente.personas = p;
+      if (respuestaAI.action === 'modify_reservation') {
+        if (!sesion.modificacion) sesion.modificacion = { fecha: null, hora: null, personas: null };
+        if (fecha && this._esFechaValida(fecha)) sesion.modificacion.fecha = fecha;
+        if (hora) {
+          const horaFranja = this._normalizarHora(hora);
+          if (horaFranja) sesion.modificacion.hora = horaFranja;
+        }
+        if (personas) {
+          const p = parseInt(personas, 10);
+          if (!isNaN(p) && p >= 1 && p <= restaurante.maximoPersonasPorReserva) {
+            sesion.modificacion.personas = p;
+          }
+        }
+      } else {
+        if (nombre) sesion.reservaPendiente.nombre = nombre;
+        if (fecha && this._esFechaValida(fecha)) sesion.reservaPendiente.fecha = fecha;
+        if (hora) {
+          const horaFranja = this._normalizarHora(hora);
+          if (horaFranja) sesion.reservaPendiente.hora = horaFranja;
+        }
+        if (personas) {
+          const p = parseInt(personas, 10);
+          if (!isNaN(p) && p >= 1 && p <= restaurante.maximoPersonasPorReserva) {
+            sesion.reservaPendiente.personas = p;
+          }
         }
       }
     }
@@ -122,6 +133,7 @@ class Bot {
     switch (action) {
       case 'save_reservation':     return await this._guardarReserva(sesion);
       case 'cancel_reservation':   return await this._cancelarReserva(sesion);
+      case 'modify_reservation':   return await this._modificarReserva(sesion);
       case 'check_availability':   return await this._verificarDisponibilidad(sesion);
       case 'show_menu':            return restaurante.menu;
       case 'show_reservations':    return await this._mostrarReservas(sesion);
@@ -232,6 +244,67 @@ class Bot {
       console.error('❌ Error consultando reservas:', error);
       return `Hubo un error al consultar las reservas. Intentá de nuevo en un momento.`;
     }
+  }
+
+  async _modificarReserva(sesion) {
+    const mod = sesion.modificacion || {};
+    const { fecha, hora, personas } = mod;
+    if (!fecha && !hora && !personas) return null;
+
+    try {
+      const actual = await sheets.obtenerReservaActiva(sesion.telefono);
+      if (!actual) {
+        return `No encontré una reserva activa para modificar. ¿Querés hacer una nueva reserva?`;
+      }
+
+      const nuevaFecha     = fecha    || actual.fecha;
+      const nuevaHora      = hora     || actual.hora;
+      const nuevasPersonas = personas || actual.personas;
+
+      // Si el slot cambia, verificar disponibilidad bajo lock para evitar doble booking
+      const cambiaSlot = nuevaFecha !== actual.fecha || nuevaHora !== actual.hora;
+      if (cambiaSlot) {
+        return this._conLock(`franja:${nuevaFecha}|${nuevaHora}`, () =>
+          this._aplicarModificacion(sesion, actual, nuevaFecha, nuevaHora, nuevasPersonas, true)
+        );
+      }
+
+      return this._aplicarModificacion(sesion, actual, nuevaFecha, nuevaHora, nuevasPersonas, false);
+
+    } catch (error) {
+      console.error('❌ Error modificando reserva:', error);
+      return `Hubo un problema al modificar la reserva. Por favor, llamá al ${restaurante.telefono}.`;
+    }
+  }
+
+  async _aplicarModificacion(sesion, actual, nuevaFecha, nuevaHora, nuevasPersonas, verificar) {
+    if (verificar) {
+      const ocupadas = await sheets.contarReservasEnFranja(nuevaFecha, nuevaHora);
+      if (ocupadas >= restaurante.capacidadMaximaPorFranja) {
+        sesion.modificacion = null;
+        return `❌ Ese horario está lleno para el ${nuevaFecha}. ¿Querés ver los horarios disponibles?`;
+      }
+    }
+
+    const reserva = await sheets.modificarReserva(sesion.telefono, {
+      fecha: nuevaFecha, hora: nuevaHora, personas: nuevasPersonas,
+    });
+
+    if (!reserva) return `No pude modificar la reserva. Por favor, intentá de nuevo.`;
+
+    sesion.modificacion = null;
+    sesion.estado = 'completado';
+
+    return (
+      `✅ *¡Reserva modificada exitosamente!*\n\n` +
+      `📋 *Datos actualizados:*\n` +
+      `  • 🔖 ID: \`${reserva.id}\`\n` +
+      `  • 👤 Nombre: ${reserva.nombre}\n` +
+      `  • 📅 Fecha: ${reserva.fecha}\n` +
+      `  • 🕐 Hora: ${reserva.hora}\n` +
+      `  • 👥 Personas: ${reserva.personas}\n\n` +
+      `¡Nos vemos pronto en ${restaurante.nombre}! 🍽️`
+    );
   }
 
   async _verificarDisponibilidad(sesion) {

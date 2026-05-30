@@ -26,6 +26,10 @@ class SheetsManager {
   constructor() {
     this.sheets = null;
     this.spreadsheetId = null;
+    // Caché en memoria con TTL: evita descargar toda la hoja en cada operación.
+    // Se invalida inmediatamente después de cualquier escritura.
+    this._cache = null; // { filas, offset, ts }
+    this._CACHE_TTL = 30_000; // 30 segundos
   }
 
   async inicializar() {
@@ -64,6 +68,7 @@ class SheetsManager {
       },
     });
 
+    this._invalidarCache();
     return { id, telefono, nombre, fecha, hora, personas, estado: 'confirmada' };
   }
 
@@ -90,6 +95,7 @@ class SheetsManager {
           resource: { values: [['cancelada']] },
         });
 
+        this._invalidarCache();
         return {
           id:       fila[COL.ID],
           telefono: fila[COL.TELEFONO],
@@ -161,18 +167,114 @@ class SheetsManager {
     return disponibles;
   }
 
+  // ─── LECTURA AVANZADA ─────────────────────────────────────
+
+  /**
+   * Devuelve la primera reserva confirmada de un teléfono, o null.
+   */
+  async obtenerReservaActiva(telefono) {
+    const { filas } = await this._obtenerTodasLasFilas();
+    const fila = filas.find(f => f[COL.TELEFONO] === telefono && f[COL.ESTADO] === 'confirmada');
+    if (!fila) return null;
+    return {
+      id:       fila[COL.ID],
+      telefono: fila[COL.TELEFONO],
+      nombre:   fila[COL.NOMBRE],
+      fecha:    fila[COL.FECHA],
+      hora:     fila[COL.HORA],
+      personas: fila[COL.PERSONAS],
+    };
+  }
+
+  /**
+   * Devuelve reservas confirmadas cuya fecha+hora está dentro de la ventana
+   * [horasAntes - margenHoras, horasAntes + margenHoras] desde ahora.
+   * Usada por el scheduler de recordatorios (por defecto: 24 h ± 30 min).
+   */
+  async obtenerReservasProximas(horasAntes = 24, margenHoras = 0.5) {
+    const { filas } = await this._obtenerTodasLasFilas();
+    const ahora = new Date();
+
+    return filas.filter(fila => {
+      if (fila[COL.ESTADO] !== 'confirmada') return false;
+      const [dia, mes, anio] = (fila[COL.FECHA] || '').split('/').map(Number);
+      const [hh, mm]         = (fila[COL.HORA]  || '').split(':').map(Number);
+      if ([dia, mes, anio, hh, mm].some(isNaN)) return false;
+      const fechaHora = new Date(anio, mes - 1, dia, hh, mm);
+      const difHoras  = (fechaHora - ahora) / 3_600_000;
+      return difHoras >= horasAntes - margenHoras && difHoras <= horasAntes + margenHoras;
+    }).map(fila => ({
+      id:       fila[COL.ID],
+      telefono: fila[COL.TELEFONO],
+      nombre:   fila[COL.NOMBRE],
+      fecha:    fila[COL.FECHA],
+      hora:     fila[COL.HORA],
+      personas: fila[COL.PERSONAS],
+    }));
+  }
+
+  /**
+   * Actualiza fecha, hora y/o personas de la primera reserva confirmada del teléfono.
+   * Solo modifica los campos presentes en `campos` (los demás quedan igual).
+   */
+  async modificarReserva(telefono, campos) {
+    const { filas, offset } = await this._obtenerTodasLasFilas();
+
+    for (let i = 0; i < filas.length; i++) {
+      const fila = filas[i];
+      if (fila[COL.TELEFONO] !== telefono || fila[COL.ESTADO] !== 'confirmada') continue;
+
+      const filaReal       = i + offset + 1;
+      const nuevaFecha     = campos.fecha     ?? fila[COL.FECHA];
+      const nuevaHora      = campos.hora      ?? fila[COL.HORA];
+      const nuevasPersonas = campos.personas  ?? fila[COL.PERSONAS];
+
+      // Actualiza columnas D (Fecha), E (Hora), F (Personas) en un solo call
+      await this.sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: this.spreadsheetId,
+        resource: {
+          valueInputOption: 'RAW',
+          data: [{
+            range:  `${HOJA}!D${filaReal}:F${filaReal}`,
+            values: [[nuevaFecha, nuevaHora, String(nuevasPersonas)]],
+          }],
+        },
+      });
+
+      this._invalidarCache();
+      return {
+        id:       fila[COL.ID],
+        telefono: fila[COL.TELEFONO],
+        nombre:   fila[COL.NOMBRE],
+        fecha:    nuevaFecha,
+        hora:     nuevaHora,
+        personas: nuevasPersonas,
+      };
+    }
+
+    return null;
+  }
+
   // ─── PRIVADOS ─────────────────────────────────────────────
 
   async _obtenerTodasLasFilas() {
+    if (this._cache && Date.now() - this._cache.ts < this._CACHE_TTL) {
+      return { filas: this._cache.filas, offset: this._cache.offset };
+    }
+
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
       range: `${HOJA}!A:H`,
     });
 
     const valores = response.data.values || [];
-    // La primera fila son encabezados, los datos arrancan en índice 1
-    const filas = valores.slice(1);
+    const filas   = valores.slice(1);
+    this._cache   = { filas, offset: 1, ts: Date.now() };
     return { filas, offset: 1 };
+  }
+
+  _invalidarCache() {
+    this._cache = null;
   }
 
   async _inicializarEncabezados() {
