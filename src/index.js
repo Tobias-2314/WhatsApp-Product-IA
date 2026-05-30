@@ -48,10 +48,64 @@ http.createServer((req, res) => {
   res.end(JSON.stringify(estadoServicio));
 }).listen(PORT, () => logger.info(`🔍 Health check escuchando en puerto ${PORT}`));
 
+// ─── RATE LIMITING ───────────────────────────────────────────
+// Máximo de mensajes por usuario por ventana de tiempo.
+// Protege la cuota de Gemini y Sheets contra floods accidentales o maliciosos.
+
+const RATE_MAX       = parseInt(process.env.RATE_MAX, 10)       || 10;
+const RATE_VENTANA   = parseInt(process.env.RATE_VENTANA_MS, 10) || 60_000;
+const _rateLimiter   = new Map(); // telefono → { count, windowStart }
+
+function estaLimitado(telefono) {
+  const ahora   = Date.now();
+  const entrada = _rateLimiter.get(telefono);
+
+  if (!entrada || ahora - entrada.windowStart > RATE_VENTANA) {
+    _rateLimiter.set(telefono, { count: 1, windowStart: ahora });
+    return false;
+  }
+  if (entrada.count >= RATE_MAX) return true;
+  entrada.count++;
+  return false;
+}
+
+// Limpia entradas expiradas cada 5 minutos para no acumular memoria
+setInterval(() => {
+  const ahora = Date.now();
+  for (const [tel, e] of _rateLimiter.entries()) {
+    if (ahora - e.windowStart > RATE_VENTANA) _rateLimiter.delete(tel);
+  }
+}, 5 * 60_000);
+
 // ─── BOT ──────────────────────────────────────────────────────
 
 let intentosReconexion = 0;
 const MAX_RECONEXIONES = 5;
+const MAX_REINTENTOS   = 3;
+
+// Reintenta procesarMensaje hasta MAX_REINTENTOS veces con backoff lineal.
+// Si todos los intentos fallan, envía un mensaje de disculpa al usuario
+// para que sepa que debe volver a escribir — evita el descarte silencioso.
+async function procesarConReintentos(sock, telefono, contenido) {
+  for (let intento = 1; intento <= MAX_REINTENTOS; intento++) {
+    try {
+      await bot.procesarMensaje(telefono, contenido);
+      return;
+    } catch (error) {
+      logger.error(`❌ Intento ${intento}/${MAX_REINTENTOS} fallido [${telefono}]: ${error.message}`);
+      if (intento < MAX_REINTENTOS) {
+        await new Promise(r => setTimeout(r, intento * 2000)); // 2 s, 4 s
+      }
+    }
+  }
+
+  logger.error(`💀 Mensaje de ${telefono} descartado tras ${MAX_REINTENTOS} reintentos`);
+  try {
+    await sock.sendMessage(`${telefono}@s.whatsapp.net`, {
+      text: 'Disculpá, tuve un problema técnico. Por favor, escribime de nuevo en un momento. 🙏',
+    });
+  } catch { /* si el envío también falla, no hay nada más que hacer */ }
+}
 
 async function iniciarBot() {
   // 1. Inicializar Google Sheets
@@ -156,17 +210,19 @@ async function iniciarBot() {
 
       if (!contenido) continue;
 
+      // Rate limiting: ignorar si el usuario excedió el límite de mensajes
+      if (estaLimitado(telefono)) {
+        logger.warn(`⚠️ Rate limit alcanzado para ${telefono} — mensaje ignorado`);
+        continue;
+      }
+
       logger.info(`📨 [${telefono}]: ${contenido}`);
 
       try {
-        // Marcar como leído
         await sock.readMessages([msg.key]);
-
-        // Procesar
-        await bot.procesarMensaje(telefono, contenido);
-
+        await procesarConReintentos(sock, telefono, contenido);
       } catch (error) {
-        logger.error(`❌ Error procesando mensaje de ${telefono}: ${error.message}`);
+        logger.error(`❌ Error inesperado con ${telefono}: ${error.message}`);
         logger.error(error.stack);
       }
     }
