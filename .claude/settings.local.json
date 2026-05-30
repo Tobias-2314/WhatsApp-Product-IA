@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/sheets.js)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/bot.js)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/ai.js)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/index.js)",
+      "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp add src/sheets.js src/bot.js src/ai.js src/index.js)",
+      "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp commit -m ' *)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/admin.js)",
+      "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp add src/admin.js src/index.js src/sheets.js src/bot.js .env.example)"
+    ]
+  }
+}
