@@ -112,7 +112,7 @@ function chatHTML() {
   <div class="phone-wrap">
     <label>Teléfono:</label>
     <input class="phone-input" id="phoneInput" value="5491100000001" placeholder="número" />
-    <button class="btn-reset" onclick="resetChat()" title="Nueva conversación">↺ Reset</button>
+    <button class="btn-reset" title="Nueva conversación">↺ Reset</button>
   </div>
 </div>
 
@@ -127,7 +127,7 @@ function chatHTML() {
 
 <div class="input-area">
   <textarea class="msg-input" id="msgInput" placeholder="Escribe un mensaje" rows="1"></textarea>
-  <button class="btn-send" id="sendBtn" onclick="enviar()">➤</button>
+  <button class="btn-send" id="sendBtn">➤</button>
 </div>
 
 <script>
@@ -215,10 +215,12 @@ async function enviar() {
 }
 
 function resetChat() {
-  // Cambiar a un nuevo número de teléfono aleatorio resetea la sesión del bot
   phoneInput.value = 'TEST' + Math.floor(Math.random() * 90000 + 10000);
   chat.innerHTML = '<div class="welcome">Nueva conversación iniciada. Escribí para empezar.</div>';
 }
+
+sendBtn.addEventListener('click', enviar);
+document.querySelector('.btn-reset').addEventListener('click', resetChat);
 </script>
 </body>
 </html>`;
