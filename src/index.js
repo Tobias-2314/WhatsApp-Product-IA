@@ -55,7 +55,7 @@ app.get('/', (req, res) => {
 app.use('/admin', crearAdminRouter());
 app.use('/test',  crearTestRouter());
 
-app.listen(PORT, () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin · Simulador en /test`));
+app.listen(PORT, '0.0.0.0', () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin · Simulador en /test`));
 
 // ─── UTILIDADES ──────────────────────────────────────────────
 
