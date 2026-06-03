@@ -21,6 +21,7 @@ const bot = require('./bot');
 const db  = require('./db');
 const restaurante = require('../config/restaurant');
 const { crearAdminRouter } = require('./admin');
+const { crearTestRouter }  = require('./test');
 
 // ─── LOGGER ──────────────────────────────────────────────────
 
@@ -52,8 +53,9 @@ app.get('/', (req, res) => {
 });
 
 app.use('/admin', crearAdminRouter());
+app.use('/test',  crearTestRouter());
 
-app.listen(PORT, () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin`));
+app.listen(PORT, () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin · Simulador en /test`));
 
 // ─── UTILIDADES ──────────────────────────────────────────────
 

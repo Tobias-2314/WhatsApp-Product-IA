@@ -11,7 +11,7 @@ const restaurante = require('../config/restaurant');
 class Bot {
   constructor() {
     this._enviadorMensajes = null;
-    // Locks en memoria para serializar operaciones por clave (teléfono o franja horaria)
+    this._onEnvio = null;
     this._locks = new Map();
   }
 
@@ -32,10 +32,13 @@ class Bot {
     this._enviadorMensajes = fn;
   }
 
+  onEnvio(fn) {
+    this._onEnvio = fn;
+  }
+
   async _enviar(telefono, mensaje) {
-    if (this._enviadorMensajes) {
-      await this._enviadorMensajes(telefono, mensaje);
-    }
+    if (this._enviadorMensajes) await this._enviadorMensajes(telefono, mensaje);
+    if (this._onEnvio) this._onEnvio(telefono, mensaje);
   }
 
   // ─── PROCESAMIENTO PRINCIPAL ──────────────────────────────
