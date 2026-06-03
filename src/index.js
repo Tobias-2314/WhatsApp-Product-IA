@@ -292,6 +292,7 @@ console.log('╚═════════════════════�
 console.log('');
 
 iniciarBot().catch((err) => {
-  logger.error('💥 Error fatal al iniciar:', err);
+  logger.error({ err }, '💥 Error fatal al iniciar');
+  console.error(err);
   process.exit(1);
 });
