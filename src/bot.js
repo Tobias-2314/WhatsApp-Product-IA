@@ -5,7 +5,7 @@
 
 const sessionManager = require('./sessions/sessionManager');
 const ai = require('./ai');
-const sheets = require('./sheets');
+const sheets = require('./db');
 const restaurante = require('../config/restaurant');
 
 class Bot {

@@ -15,12 +15,12 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
-const http = require('http');
+const express = require('express');
 
 const bot = require('./bot');
-const sheets = require('./sheets');
+const db  = require('./db');
 const restaurante = require('../config/restaurant');
-const { manejarAdmin } = require('./admin');
+const { crearAdminRouter } = require('./admin');
 
 // ─── LOGGER ──────────────────────────────────────────────────
 
@@ -40,28 +40,20 @@ const logger = pino(
 
 const estadoServicio = {
   whatsapp: 'connecting', // 'ok' | 'connecting' | 'error'
-  sheets:   'connecting', // 'ok' | 'error'
+  db:       'connecting', // 'ok' | 'error'
 };
 
 const PORT = process.env.PORT || 3000;
-http.createServer(async (req, res) => {
-  try {
-    const pathname = new URL(req.url, 'http://localhost').pathname;
+const app  = express();
 
-    if (pathname.startsWith('/admin')) {
-      await manejarAdmin(req, res);
-      return;
-    }
+app.get('/', (req, res) => {
+  const ok = estadoServicio.whatsapp === 'ok' && estadoServicio.db === 'ok';
+  res.status(ok ? 200 : 503).json(estadoServicio);
+});
 
-    // Health check por defecto
-    const ok = estadoServicio.whatsapp === 'ok' && estadoServicio.sheets === 'ok';
-    res.writeHead(ok ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(estadoServicio));
-  } catch (err) {
-    res.writeHead(500);
-    res.end('Internal Server Error');
-  }
-}).listen(PORT, () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin`));
+app.use('/admin', crearAdminRouter());
+
+app.listen(PORT, () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin`));
 
 // ─── UTILIDADES ──────────────────────────────────────────────
 
@@ -71,7 +63,6 @@ const maskTel = tel => `****${String(tel).slice(-4)}`;
 
 // ─── RATE LIMITING ───────────────────────────────────────────
 // Máximo de mensajes por usuario por ventana de tiempo.
-// Protege la cuota de Gemini y Sheets contra floods accidentales o maliciosos.
 
 const RATE_MAX       = parseInt(process.env.RATE_MAX, 10)       || 10;
 const RATE_VENTANA   = parseInt(process.env.RATE_VENTANA_MS, 10) || 60_000;
@@ -113,7 +104,7 @@ const _recordatoriosEnviados = new Set();
 
 async function enviarRecordatorios(sock) {
   try {
-    const reservas = await sheets.obtenerReservasProximas(24);
+    const reservas = await db.obtenerReservasProximas(24);
     for (const reserva of reservas) {
       if (_recordatoriosEnviados.has(reserva.id)) continue;
 
@@ -160,11 +151,11 @@ async function procesarConReintentos(sock, telefono, contenido) {
 }
 
 async function iniciarBot() {
-  // 1. Inicializar Google Sheets
-  logger.info('🔄 Conectando con Google Sheets...');
-  await sheets.inicializar();
-  estadoServicio.sheets = 'ok';
-  logger.info('✅ Google Sheets listo');
+  // 1. Inicializar base de datos
+  logger.info('🔄 Conectando con PostgreSQL...');
+  await db.inicializar();
+  estadoServicio.db = 'ok';
+  logger.info('✅ Base de datos lista');
 
   // 2. Cargar estado de autenticación de WhatsApp
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
