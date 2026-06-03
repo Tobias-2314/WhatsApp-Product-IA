@@ -21,7 +21,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/reservas
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 3000

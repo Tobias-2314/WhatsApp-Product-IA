@@ -1,26 +1,22 @@
 // ============================================================
-// INTEGRACIÓN CON GOOGLE GEMINI 1.5 FLASH
-// Procesamiento de lenguaje natural para el flujo de reservas
+// INTEGRACIÓN CON GROQ (llama-3.3-70b-versatile)
 // ============================================================
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 const restaurante = require('../config/restaurant');
 
 class AIManager {
   constructor() {
-    this.genAI = null;
+    this.client = null;
   }
 
   _inicializar() {
-    if (!this.genAI) {
-      if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY no está definido en .env');
-      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    if (!this.client) {
+      if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY no está definido en .env');
+      this.client = new Groq({ apiKey: process.env.GROQ_API_KEY });
     }
   }
 
-  /**
-   * Construye el system prompt con el contexto del restaurante y la sesión actual.
-   */
   _construirSystemPrompt(sesion, franjasDisponibles) {
     const ahora = new Date();
     const fechaActual = ahora.toLocaleDateString('es-AR', {
@@ -112,54 +108,46 @@ FORMATO DE RESPUESTA OBLIGATORIO (JSON exacto, sin markdown):
 }`;
   }
 
-  /**
-   * Procesa un mensaje del cliente y devuelve la respuesta estructurada de Gemini.
-   */
   async procesarMensaje(sesion, mensaje, franjasDisponibles = null) {
     this._inicializar();
 
     try {
       const systemPrompt = this._construirSystemPrompt(sesion, franjasDisponibles);
 
-      // Crear modelo con el system instruction dinámico
-      const model = this.genAI.getGenerativeModel({
-        model: 'gemini-1.5-flash',
-        systemInstruction: systemPrompt,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 800,
-          responseMimeType: 'application/json',
-        },
-      });
-
-      // Convertir historial de sesión al formato que espera Gemini
       const historial = sesion.historialConversacion
-        .slice(-18) // Últimos 18 turnos para no exceder el contexto
+        .slice(-18)
         .map(msg => ({
-          role: msg.rol === 'bot' ? 'model' : 'user',
-          parts: [{ text: msg.contenido }],
+          role: msg.rol === 'bot' ? 'assistant' : 'user',
+          content: msg.contenido,
         }));
 
-      const chat = model.startChat({ history: historial });
-      const result = await chat.sendMessage(mensaje);
-      const texto = result.response.text();
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...historial,
+        { role: 'user', content: mensaje },
+      ];
 
+      const completion = await this.client.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages,
+        temperature: 0.7,
+        max_tokens: 800,
+        response_format: { type: 'json_object' },
+      });
+
+      const texto = completion.choices[0].message.content;
       const parsed = JSON.parse(texto);
 
-      // Validaciones mínimas para no crashear si Gemini devuelve algo raro
       if (!parsed.response || !parsed.action) throw new Error('Respuesta JSON incompleta');
 
       return parsed;
 
     } catch (error) {
-      console.error('⚠️  Error en Gemini:', error.message);
+      console.error('⚠️  Error en Groq:', error.message);
       return this._fallback(sesion.estado);
     }
   }
 
-  /**
-   * Respuestas de emergencia si Gemini no está disponible.
-   */
   _fallback(estado) {
     const mensajes = {
       inicio: `¡Hola! Soy el asistente de ${restaurante.nombre}. Podés pedirme: *hacer una reserva*, *consultar tu reserva*, *cancelar*, *ver el menú* o *hablar con una persona*.`,
