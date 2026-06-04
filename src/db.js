@@ -88,6 +88,12 @@ class DBManager {
       );
     `);
 
+    // Posiciones en el plano del salón
+    await pool.query(`
+      ALTER TABLE mesas ADD COLUMN IF NOT EXISTS x_pos INTEGER DEFAULT NULL;
+      ALTER TABLE mesas ADD COLUMN IF NOT EXISTS y_pos INTEGER DEFAULT NULL;
+    `);
+
     // Índices
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_reservas_telefono   ON reservas(telefono);
@@ -452,7 +458,7 @@ class DBManager {
 
   async obtenerOcupacionDia(fecha) {
     const { rows: mesasRows } = await pool.query(
-      `SELECT id, nombre, capacidad FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`
+      `SELECT id, nombre, capacidad, x_pos, y_pos FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`
     );
     const { rows: reservas } = await pool.query(
       `SELECT r.id, r.mesa_id, r.mesas_ids, r.hora, r.hora_fin, r.duracion_minutos, r.nombre, r.personas
@@ -637,18 +643,18 @@ class DBManager {
 
   async obtenerMesas() {
     const { rows } = await pool.query(
-      `SELECT id, nombre, capacidad, activa FROM mesas ORDER BY capacidad ASC, id ASC`
+      `SELECT id, nombre, capacidad, activa, x_pos, y_pos FROM mesas ORDER BY capacidad ASC, id ASC`
     );
-    return rows.map(r => ({ id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa }));
+    return rows.map(r => ({ id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa, x_pos: r.x_pos ?? null, y_pos: r.y_pos ?? null }));
   }
 
   async crearMesa({ nombre, capacidad }) {
     const { rows } = await pool.query(
-      `INSERT INTO mesas (nombre, capacidad) VALUES ($1, $2) RETURNING id, nombre, capacidad, activa`,
+      `INSERT INTO mesas (nombre, capacidad) VALUES ($1, $2) RETURNING id, nombre, capacidad, activa, x_pos, y_pos`,
       [nombre, parseInt(capacidad, 10)]
     );
     const r = rows[0];
-    return { id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa };
+    return { id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa, x_pos: r.x_pos ?? null, y_pos: r.y_pos ?? null };
   }
 
   async obtenerCombinaciones() {
@@ -683,15 +689,17 @@ class DBManager {
     if (campos.nombre    !== undefined) { sets.push(`nombre    = $${i++}`); params.push(campos.nombre); }
     if (campos.capacidad !== undefined) { sets.push(`capacidad = $${i++}`); params.push(parseInt(campos.capacidad, 10)); }
     if (campos.activa    !== undefined) { sets.push(`activa    = $${i++}`); params.push(campos.activa); }
+    if (campos.x_pos     !== undefined) { sets.push(`x_pos     = $${i++}`); params.push(campos.x_pos === null ? null : parseInt(campos.x_pos, 10)); }
+    if (campos.y_pos     !== undefined) { sets.push(`y_pos     = $${i++}`); params.push(campos.y_pos === null ? null : parseInt(campos.y_pos, 10)); }
     if (!sets.length) return null;
     params.push(id);
     const { rows } = await pool.query(
-      `UPDATE mesas SET ${sets.join(', ')} WHERE id = $${i} RETURNING id, nombre, capacidad, activa`,
+      `UPDATE mesas SET ${sets.join(', ')} WHERE id = $${i} RETURNING id, nombre, capacidad, activa, x_pos, y_pos`,
       params
     );
     if (!rows.length) return null;
     const r = rows[0];
-    return { id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa };
+    return { id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa, x_pos: r.x_pos ?? null, y_pos: r.y_pos ?? null };
   }
 
   // ─── PRIVADOS ─────────────────────────────────────────────

@@ -162,10 +162,12 @@ function crearAdminRouter(io = null) {
     try {
       const id     = parseInt(req.params.id, 10);
       const campos = {};
-      const { nombre, capacidad, activa } = req.body || {};
+      const { nombre, capacidad, activa, x_pos, y_pos } = req.body || {};
       if (nombre    !== undefined) campos.nombre    = nombre.trim();
       if (capacidad !== undefined) campos.capacidad = parseInt(capacidad, 10);
       if (activa    !== undefined) campos.activa    = Boolean(activa);
+      if (x_pos     !== undefined) campos.x_pos     = x_pos === null ? null : parseInt(x_pos, 10);
+      if (y_pos     !== undefined) campos.y_pos     = y_pos === null ? null : parseInt(y_pos, 10);
       const mesa = await db.actualizarMesa(id, campos);
       if (!mesa) return res.status(404).json({ error: 'Mesa no encontrada' });
       res.json(mesa);

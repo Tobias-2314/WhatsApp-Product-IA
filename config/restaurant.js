@@ -27,7 +27,14 @@ module.exports = {
 
   // --- FRANJAS HORARIAS PARA RESERVAS ---
   // El bot solo ofrecerá estos horarios al cliente
-  franjasHorarias: ['12:00', '14:00', '20:00', '21:00', '22:00'],
+  franjasHorarias: [
+    '12:00', '12:15', '12:30', '12:45',
+    '13:00', '13:15', '13:30', '13:45',
+    '14:00', '14:15', '14:30', '14:45',
+    '20:00', '20:15', '20:30', '20:45',
+    '21:00', '21:15', '21:30', '21:45',
+    '22:00', '22:15', '22:30', '22:45',
+  ],
 
   // Máximo de personas aceptadas en una sola reserva
   maximoPersonasPorReserva: 12,

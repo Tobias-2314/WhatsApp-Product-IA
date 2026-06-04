@@ -27,28 +27,18 @@ function isCombinado(id1, id2) {
 }
 
 // ─── Layout visual ────────────────────────────────────────────
-// posiciones guardadas localmente (localStorage) por mesa id
-const STORAGE_KEY = 'mesa_positions'
-
-function cargarPosiciones() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') } catch { return {} }
-}
-function guardarPosiciones(pos) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(pos))
-}
-
-const posiciones  = ref(cargarPosiciones())  // { [mesaId]: { x, y } }
-const CANVAS_W    = 700
-const CANVAS_H    = 420
-const MESA_W      = 80
-const MESA_H      = 50
+const CANVAS_W = 700
+const CANVAS_H = 420
+const MESA_W   = 80
+const MESA_H   = 50
 
 function posicionMesa(id) {
-  return posiciones.value[id] ?? defaultPos(id)
+  const m = mesas.value.find(x => x.id === id)
+  if (m && m.x_pos !== null && m.y_pos !== null) return { x: m.x_pos, y: m.y_pos }
+  return defaultPos(id)
 }
 
 function defaultPos(id) {
-  // Distribuir en grid si no tienen posición guardada
   const idx = mesas.value.findIndex(m => m.id === id)
   const col = idx % 4
   const row = Math.floor(idx / 4)
@@ -60,8 +50,7 @@ const dragging = ref(null)  // { id, offsetX, offsetY }
 const canvasEl = ref(null)
 
 function onMouseDown(e, mesaId) {
-  if (conectandoDesde.value !== null) return  // modo conexión: no arrastrar
-  const pos = posicionMesa(mesaId)
+  if (conectandoDesde.value !== null) return
   dragging.value = { id: mesaId, offsetX: e.offsetX, offsetY: e.offsetY }
 }
 
@@ -70,13 +59,18 @@ function onMouseMove(e) {
   const rect = canvasEl.value.getBoundingClientRect()
   const x = Math.max(0, Math.min(CANVAS_W - MESA_W, e.clientX - rect.left - dragging.value.offsetX))
   const y = Math.max(0, Math.min(CANVAS_H - MESA_H, e.clientY - rect.top  - dragging.value.offsetY))
-  posiciones.value = { ...posiciones.value, [dragging.value.id]: { x, y } }
+  const idx = mesas.value.findIndex(m => m.id === dragging.value.id)
+  if (idx !== -1) mesas.value[idx] = { ...mesas.value[idx], x_pos: Math.round(x), y_pos: Math.round(y) }
 }
 
-function onMouseUp() {
+async function onMouseUp() {
   if (dragging.value) {
-    guardarPosiciones(posiciones.value)
+    const id = dragging.value.id
     dragging.value = null
+    const m = mesas.value.find(x => x.id === id)
+    if (m && m.x_pos !== null) {
+      try { await actualizarMesa(id, { x_pos: m.x_pos, y_pos: m.y_pos }) } catch { /* ignore */ }
+    }
   }
 }
 
