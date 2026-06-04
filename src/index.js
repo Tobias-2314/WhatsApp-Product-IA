@@ -15,7 +15,10 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
+const path = require('path');
+const http = require('http');
 const express = require('express');
+const { Server } = require('socket.io');
 
 const bot = require('./bot');
 const db  = require('./db');
@@ -46,16 +49,19 @@ const estadoServicio = {
 
 const PORT = process.env.PORT || 3000;
 const app  = express();
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
 
 app.get('/', (req, res) => {
   const ok = estadoServicio.whatsapp === 'ok' && estadoServicio.db === 'ok';
   res.status(ok ? 200 : 503).json(estadoServicio);
 });
 
-app.use('/admin', crearAdminRouter());
+app.use('/img',   express.static(path.join(__dirname, '../img')));
+app.use('/admin', crearAdminRouter(io));
 app.use('/test',  crearTestRouter());
 
-app.listen(PORT, '0.0.0.0', () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin · Simulador en /test`));
+httpServer.listen(PORT, '0.0.0.0', () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin · Simulador en /test`));
 
 // ─── UTILIDADES ──────────────────────────────────────────────
 
@@ -98,33 +104,56 @@ const MAX_RECONEXIONES = 5;
 const MAX_REINTENTOS   = 3;
 
 // ─── RECORDATORIOS AUTOMÁTICOS ───────────────────────────────
-// Envía un mensaje 24 horas antes de cada reserva confirmada.
-// Usa un Set en memoria para no duplicar si el bot sigue corriendo.
-// (En un reinicio se puede re-enviar el recordatorio — riesgo aceptable.)
+// Scheduler 1 (24h antes): pide confirmación de asistencia.
+// Scheduler 2 (2h antes): aviso final solo a quienes confirmaron.
+// Usa Sets en memoria para no duplicar si el bot sigue corriendo.
 
-const _recordatoriosEnviados = new Set();
+const _confirmacionesEnviadas = new Set();
+const _avisosFinalEnviados    = new Set();
 
-async function enviarRecordatorios(sock) {
+async function enviarConfirmaciones(sock) {
   try {
-    const reservas = await db.obtenerReservasProximas(24);
+    const reservas = await db.obtenerReservasProximas(24, 1);
     for (const reserva of reservas) {
-      if (_recordatoriosEnviados.has(reserva.id)) continue;
+      if (_confirmacionesEnviadas.has(reserva.id)) continue;
 
       await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
         text:
           `🍽️ *¡Recordatorio de reserva!*\n\n` +
-          `Hola ${reserva.nombre}! Te recordamos que mañana tenés una reserva en *${restaurante.nombre}*:\n\n` +
+          `Hola ${reserva.nombre}! Te recordamos tu reserva en *${restaurante.nombre}*:\n\n` +
           `  • 📅 Fecha: ${reserva.fecha}\n` +
           `  • 🕐 Hora: ${reserva.hora}\n` +
           `  • 👥 Personas: ${reserva.personas}\n\n` +
-          `Si necesitás cancelar o modificar tu reserva, escribinos. ¡Te esperamos! 😊`,
+          `¿Confirmás tu asistencia? Respondé *SÍ* para confirmar o *NO* para cancelar. 😊`,
       });
 
-      _recordatoriosEnviados.add(reserva.id);
-      logger.info(`📅 Recordatorio enviado a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
+      _confirmacionesEnviadas.add(reserva.id);
+      await db.marcarConfirmacionEnviada(reserva.id).catch(() => {});
+      logger.info(`📅 Confirmación enviada a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
     }
   } catch (error) {
-    logger.error(`❌ Error en scheduler de recordatorios: ${error.message}`);
+    logger.error(`❌ Error en scheduler de confirmaciones: ${error.message}`);
+  }
+}
+
+async function enviarAvisosFinal(sock) {
+  try {
+    const reservas = await db.obtenerReservasProximas(2, 0.5, { soloConConfirmacion: true });
+    for (const reserva of reservas) {
+      if (_avisosFinalEnviados.has(reserva.id)) continue;
+
+      await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
+        text:
+          `⏰ *¡Tu reserva es en 2 horas!*\n\n` +
+          `Hola ${reserva.nombre}! Tu mesa en *${restaurante.nombre}* te espera a las *${reserva.hora}*.\n\n` +
+          `Si no podés venir, escribinos ahora para liberarla. ¡Hasta pronto! 😊`,
+      });
+
+      _avisosFinalEnviados.add(reserva.id);
+      logger.info(`⏰ Aviso final enviado a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
+    }
+  } catch (error) {
+    logger.error(`❌ Error en scheduler de avisos finales: ${error.message}`);
   }
 }
 
@@ -185,6 +214,36 @@ async function iniciarBot() {
     }
   });
 
+  bot.setEnviadorMedia(async (telefono, { tipo, valor, caption }) => {
+    const jid = telefono.includes('@') ? telefono : `${telefono}@s.whatsapp.net`;
+    try {
+      const esUrl = /^https?:\/\//i.test(valor);
+      const src = esUrl ? { url: valor } : fs.readFileSync(path.resolve(__dirname, '..', valor));
+
+      if (tipo === 'imagen') {
+        await sock.sendMessage(jid, { image: src, caption: caption || '' });
+      } else if (tipo === 'pdf') {
+        await sock.sendMessage(jid, {
+          document: src,
+          mimetype: 'application/pdf',
+          fileName: 'menu.pdf',
+          caption: caption || '',
+        });
+      } else if (tipo === 'url') {
+        await sock.sendMessage(jid, { text: valor });
+      }
+    } catch (err) {
+      logger.error(`❌ Error enviando media a ${telefono}: ${err.message}`);
+      // Fallback: enviar el menú en texto plano
+      try {
+        await sock.sendMessage(jid, { text: restaurante.menu });
+      } catch { /* nada más que hacer */ }
+    }
+  });
+
+  // 5. Registrar hook de socket.io para cambios de reserva
+  bot.onReservaChange((tipo, datos) => io.emit(`reserva:${tipo}`, datos));
+
   // ─── EVENTOS DE CONEXIÓN ────────────────────────────────────
 
   sock.ev.on('connection.update', async (update) => {
@@ -203,11 +262,12 @@ async function iniciarBot() {
       estadoServicio.whatsapp = 'ok';
       logger.info('✅ ¡Bot conectado a WhatsApp exitosamente!');
 
-      // Arrancar el scheduler de recordatorios solo la primera vez que conecta
-      if (!sock._recordatoriosActivos) {
-        sock._recordatoriosActivos = true;
-        setInterval(() => enviarRecordatorios(sock), 15 * 60_000);
-        logger.info('⏰ Scheduler de recordatorios activo (cada 15 min)');
+      // Arrancar schedulers solo la primera vez que conecta
+      if (!sock._schedulersActivos) {
+        sock._schedulersActivos = true;
+        setInterval(() => enviarConfirmaciones(sock), 15 * 60_000);
+        setInterval(() => enviarAvisosFinal(sock),    15 * 60_000);
+        logger.info('⏰ Schedulers de recordatorios activos (cada 15 min)');
       }
     }
 

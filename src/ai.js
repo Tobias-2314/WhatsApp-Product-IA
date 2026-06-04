@@ -35,9 +35,13 @@ class AIManager {
     const { nombre, fecha, hora, personas } = sesion.reservaPendiente;
     const mod = sesion.modificacion || {};
 
+    const clienteConocidoTexto = (nombre && sesion.historialConversacion.length === 0)
+      ? `\nCLIENTE CONOCIDO: ${nombre} (ya ha reservado antes)\n→ NO preguntes su nombre, ya lo tenemos guardado. Trátalo por su nombre naturalmente.\n`
+      : '';
+
     const disponibilidadTexto = franjasDisponibles
-      ? `\nDISPONIBILIDAD PARA ${fecha || 'la fecha solicitada'}:\n` +
-        franjasDisponibles.map(f => `  - ${f.hora}: ${f.lugaresDisponibles} lugar/es disponible/s`).join('\n')
+      ? `\nDISPONIBILIDAD PARA ${fecha || 'la fecha solicitada'} (ya filtrada para ${personas || 1} personas):\n` +
+        franjasDisponibles.map(f => `  - ${f.hora}${f.combinada ? ' (requiere combinar mesas)' : ''}`).join('\n')
       : '';
 
     const modificacionTexto = (mod.fecha || mod.hora || mod.personas)
@@ -54,7 +58,7 @@ DATOS DEL RESTAURANTE:
   - Teléfono de contacto: ${restaurante.telefono}
   - Dirección: ${restaurante.direccion}
   - Franjas horarias para reservas: ${restaurante.franjasHorarias.join(', ')}
-  - Capacidad máxima por franja: ${restaurante.capacidadMaximaPorFranja} mesas
+  - Duración de cada reserva: ${restaurante.duracionReservaMinutos} minutos
   - Máximo de personas por reserva: ${restaurante.maximoPersonasPorReserva}
   - Cancelación permitida hasta: ${restaurante.horasMinimaCancelacion} horas antes
   - Anticipación máxima: ${restaurante.diasMaximosAnticipacion} días
@@ -63,7 +67,7 @@ HORARIOS DE ATENCIÓN:
 ${dias}
 
 FECHA Y HORA ACTUAL (Argentina): ${fechaActual}, ${horaActual}
-${disponibilidadTexto}${modificacionTexto}
+${clienteConocidoTexto}${disponibilidadTexto}${modificacionTexto}
 
 ESTADO DE ESTA CONVERSACIÓN:
   - Estado actual: ${sesion.estado}
@@ -74,7 +78,7 @@ ESTADO DE ESTA CONVERSACIÓN:
     * Cantidad de personas: ${personas || '(todavía no tenemos)'}
 
 REGLAS IMPORTANTES:
-1. Respondé siempre en español rioplatense (Argentina). Usá "vos" y "te" en lugar de "tú" y "te". Sé cálido y natural.
+1. Respondé siempre en español argentino. Usá "vos" en lugar de "tú". Sé cálido y profesional, pero NO uses expresiones muy coloquiales como "che", "boludo", "pibe" o similares.
 2. Para hacer una reserva necesitás recolectar exactamente: nombre completo, fecha (DD/MM/YYYY), hora (de las franjas disponibles), cantidad de personas.
 3. NO preguntés datos que ya tenés en los "Datos ya recolectados". Avanzá siempre al próximo dato faltante.
 4. Si el cliente dice "mañana", "el viernes", "en tres días", etc., convertilo a DD/MM/YYYY usando la fecha actual.
@@ -93,11 +97,12 @@ ACCIONES DISPONIBLES (usá la correcta según el contexto):
 - show_menu: cuando el cliente pide ver el menú
 - show_reservations: cuando el cliente quiere ver sus reservas actuales
 - transfer_human: cuando el cliente pide hablar con una persona
+- add_waitlist: cuando el cliente acepta anotarse en la lista de espera para un horario sin disponibilidad
 
 FORMATO DE RESPUESTA OBLIGATORIO (JSON exacto, sin markdown):
 {
   "response": "el mensaje que le vas a enviar al cliente por WhatsApp",
-  "action": "none|save_reservation|cancel_reservation|modify_reservation|check_availability|show_menu|show_reservations|transfer_human",
+  "action": "none|save_reservation|cancel_reservation|modify_reservation|check_availability|show_menu|show_reservations|transfer_human|add_waitlist",
   "extractedData": {
     "nombre": "nombre extraído del mensaje o null",
     "fecha": "fecha en formato DD/MM/YYYY o null",

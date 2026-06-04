@@ -32,7 +32,7 @@ function authMiddleware(req, res, next) {
 
 // ─── ROUTER ───────────────────────────────────────────────
 
-function crearAdminRouter() {
+function crearAdminRouter(io = null) {
   const router = express.Router();
 
   // Archivos estáticos del build de Vue (sin autenticación)
@@ -75,23 +75,137 @@ function crearAdminRouter() {
     try {
       const reserva = await db.cancelarReservaPorId(req.params.id);
       if (!reserva) return res.status(404).json({ error: 'Reserva no encontrada o ya cancelada' });
+      if (io) io.emit('reserva:cancelada', reserva);
       res.json(reserva);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // GET /admin/api/reservas/export — descarga CSV
+  // PUT /admin/api/reservas/:id/no-show
+  router.put('/api/reservas/:id/no-show', async (req, res) => {
+    try {
+      const reserva = await db.marcarNoShow(req.params.id);
+      if (!reserva) return res.status(404).json({ error: 'Reserva no encontrada o no está confirmada' });
+      if (io) io.emit('reserva:no_show', reserva);
+      res.json(reserva);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /admin/api/reservas/export — descarga CSV con filtros
   router.get('/api/reservas/export', async (req, res) => {
     try {
-      const reservas = await db.obtenerReservasFiltradas({});
-      const header   = 'ID,Teléfono,Nombre,Fecha,Hora,Personas,Estado,Timestamp';
+      const { fecha, estado, search, desde, hasta } = req.query;
+      const reservas = await db.obtenerReservasFiltradas({ fecha, estado, search, desde, hasta });
+      const header   = 'ID,Teléfono,Nombre,Fecha,Hora,Personas,Mesa,Estado,Timestamp';
       const filas    = reservas.map(r =>
-        [r.id, r.telefono, csvEsc(r.nombre), r.fecha, r.hora, r.personas, r.estado, csvEsc(r.timestamp || '')].join(',')
+        [r.id, r.telefono, csvEsc(r.nombre), r.fecha, r.hora, r.personas,
+         csvEsc(r.mesa_nombre || ''), r.estado, csvEsc(r.timestamp || '')].join(',')
       );
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="reservas_${fechaAR(0).replace(/\//g, '-')}.csv"`);
       res.send('﻿' + [header, ...filas].join('\n')); // BOM para Excel
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /admin/api/ocupacion?fecha=DD/MM/YYYY
+  router.get('/api/ocupacion', async (req, res) => {
+    try {
+      const fecha = req.query.fecha || fechaAR(0);
+      res.json(await db.obtenerOcupacionDia(fecha));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /admin/api/analytics?desde=DD/MM/YYYY&hasta=DD/MM/YYYY
+  router.get('/api/analytics', async (req, res) => {
+    try {
+      const { desde, hasta } = req.query;
+      if (!desde || !hasta) return res.status(400).json({ error: 'Parámetros desde y hasta requeridos' });
+      res.json(await db.obtenerAnalytics({ desde, hasta }));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── MESAS ────────────────────────────────────────────────
+
+  // GET /admin/api/mesas
+  router.get('/api/mesas', async (req, res) => {
+    try {
+      res.json(await db.obtenerMesas());
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /admin/api/mesas
+  router.post('/api/mesas', async (req, res) => {
+    try {
+      const { nombre, capacidad } = req.body || {};
+      if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre es requerido' });
+      const cap = parseInt(capacidad, 10);
+      if (!cap || cap < 1) return res.status(400).json({ error: 'La capacidad debe ser un número mayor a 0' });
+      res.status(201).json(await db.crearMesa({ nombre: nombre.trim(), capacidad: cap }));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /admin/api/mesas/:id
+  router.put('/api/mesas/:id', async (req, res) => {
+    try {
+      const id     = parseInt(req.params.id, 10);
+      const campos = {};
+      const { nombre, capacidad, activa } = req.body || {};
+      if (nombre    !== undefined) campos.nombre    = nombre.trim();
+      if (capacidad !== undefined) campos.capacidad = parseInt(capacidad, 10);
+      if (activa    !== undefined) campos.activa    = Boolean(activa);
+      const mesa = await db.actualizarMesa(id, campos);
+      if (!mesa) return res.status(404).json({ error: 'Mesa no encontrada' });
+      res.json(mesa);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── COMBINACIONES ────────────────────────────────────────
+
+  // GET /admin/api/combinaciones
+  router.get('/api/combinaciones', async (req, res) => {
+    try {
+      res.json(await db.obtenerCombinaciones());
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /admin/api/combinaciones
+  router.post('/api/combinaciones', async (req, res) => {
+    try {
+      const { mesaId1, mesaId2 } = req.body || {};
+      if (!mesaId1 || !mesaId2 || mesaId1 === mesaId2)
+        return res.status(400).json({ error: 'IDs de mesas inválidos' });
+      await db.agregarCombinacion(parseInt(mesaId1), parseInt(mesaId2));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /admin/api/combinaciones
+  router.delete('/api/combinaciones', async (req, res) => {
+    try {
+      const { mesaId1, mesaId2 } = req.body || {};
+      if (!mesaId1 || !mesaId2)
+        return res.status(400).json({ error: 'IDs de mesas requeridos' });
+      await db.eliminarCombinacion(parseInt(mesaId1), parseInt(mesaId2));
+      res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

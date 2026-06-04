@@ -7,11 +7,16 @@ const express        = require('express');
 const bot            = require('./bot');
 const sessionManager = require('./sessions/sessionManager');
 
-const router    = express.Router();
-const _captured = new Map();
+const router         = express.Router();
+const _captured      = new Map();
+const _capturedMedia = new Map();
 
 bot.onEnvio((telefono, mensaje) => {
   if (_captured.has(telefono)) _captured.get(telefono).push(mensaje);
+});
+
+bot.onEnvioMedia((telefono, mediaConfig) => {
+  if (_capturedMedia.has(telefono)) _capturedMedia.get(telefono).push(mediaConfig);
 });
 
 // GET /test → app Vue 3
@@ -27,17 +32,21 @@ router.post('/message', express.json(), async (req, res) => {
     return res.status(400).json({ error: 'Falta el campo mensaje' });
 
   _captured.set(telefono, []);
+  _capturedMedia.set(telefono, []);
   try {
     await bot.procesarMensaje(telefono, mensaje.trim());
   } catch (err) {
     _captured.delete(telefono);
+    _capturedMedia.delete(telefono);
     return res.status(500).json({ error: err.message });
   }
 
   const respuestas = _captured.get(telefono) || [];
+  const media      = _capturedMedia.get(telefono) || [];
   _captured.delete(telefono);
+  _capturedMedia.delete(telefono);
   const sesion = sessionManager.obtenerSesion(telefono);
-  res.json({ respuestas, sesion: _sanitize(sesion) });
+  res.json({ respuestas, media, sesion: _sanitize(sesion) });
 });
 
 // GET /test/session?telefono=X
@@ -229,6 +238,21 @@ body {
 }
 .bubble-time { font-size: .63rem; color: rgba(255,255,255,.38); }
 
+/* ── Media bubbles ── */
+.media-img { max-width: 100%; border-radius: 4px; display: block; margin-bottom: .3rem; }
+.media-caption { font-size: .82rem; line-height: 1.4; }
+.media-link {
+  display: inline-flex; align-items: center; gap: .4rem;
+  background: #1a2e3f; border-radius: 6px; padding: .4rem .7rem;
+  color: #53bdeb; text-decoration: none; font-size: .83rem;
+  word-break: break-all;
+}
+.media-link:hover { text-decoration: underline; }
+.media-placeholder {
+  background: #1b2e20; border: 1px dashed #2a5c3f; border-radius: 6px;
+  padding: .5rem .7rem; font-size: .78rem; color: #8696a0;
+}
+
 /* ── Typing ── */
 .typing-wrap {
   padding: 0 1rem .45rem;
@@ -354,11 +378,30 @@ body {
       Cambiá el teléfono para simular otro usuario.
     </div>
     <template v-for="msg in messages" :key="msg.id">
-      <div class="bubble" :class="msg.side">
+      <!-- Burbuja de texto normal -->
+      <div v-if="msg.kind === 'text'" class="bubble" :class="msg.side">
         <div class="bubble-body" v-html="msg.html"></div>
-        <div class="bubble-meta">
-          <span class="bubble-time">{{ msg.time }}</span>
-        </div>
+        <div class="bubble-meta"><span class="bubble-time">{{ msg.time }}</span></div>
+      </div>
+      <!-- Burbuja de media -->
+      <div v-else class="bubble bot">
+        <!-- Imagen -->
+        <template v-if="msg.media.tipo === 'imagen'">
+          <img v-if="msg.media.esUrl" :src="msg.media.valor" class="media-img" alt="menú" />
+          <div v-else class="media-placeholder">📷 Imagen local: <em>{{ msg.media.valor }}</em></div>
+          <div v-if="msg.media.caption" class="media-caption">{{ msg.media.caption }}</div>
+        </template>
+        <!-- PDF -->
+        <template v-else-if="msg.media.tipo === 'pdf'">
+          <a v-if="msg.media.esUrl" :href="msg.media.valor" target="_blank" class="media-link">📄 Descargar menú (PDF)</a>
+          <div v-else class="media-placeholder">📄 PDF local: <em>{{ msg.media.valor }}</em></div>
+          <div v-if="msg.media.caption" class="media-caption" style="margin-top:.3rem">{{ msg.media.caption }}</div>
+        </template>
+        <!-- URL -->
+        <template v-else-if="msg.media.tipo === 'url'">
+          <a :href="msg.media.valor" target="_blank" class="media-link">🔗 {{ msg.media.valor }}</a>
+        </template>
+        <div class="bubble-meta"><span class="bubble-time">{{ msg.time }}</span></div>
       </div>
     </template>
   </div>
@@ -473,7 +516,17 @@ createApp({
     }
 
     function addMessage(text, side) {
-      messages.value.push({ id: ++msgId, html: formatWA(text), side, time: now() });
+      messages.value.push({ id: ++msgId, kind: 'text', html: formatWA(text), side, time: now() });
+      nextTick(() => {
+        if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight;
+      });
+    }
+
+    function addMedia(mediaConfig) {
+      let valor = mediaConfig.valor || '';
+      if (valor.startsWith('./')) valor = valor.slice(1); // './img/x' → '/img/x'
+      const esUrl = /^https?:\\/\\//i.test(valor) || valor.startsWith('/');
+      messages.value.push({ id: ++msgId, kind: 'media', media: { ...mediaConfig, valor, esUrl }, time: now() });
       nextTick(() => {
         if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight;
       });
@@ -504,10 +557,16 @@ createApp({
 
         if (!res.ok) {
           addMessage('⚠️ Error: ' + (data.error || res.status), 'error');
-        } else if (data.respuestas && data.respuestas.length) {
-          data.respuestas.forEach(r => addMessage(r, 'bot'));
         } else {
-          addMessage('(sin respuesta del bot)', 'bot');
+          if (data.respuestas && data.respuestas.length) {
+            data.respuestas.forEach(r => addMessage(r, 'bot'));
+          }
+          if (data.media && data.media.length) {
+            data.media.forEach(m => addMedia(m));
+          }
+          if (!data.respuestas?.length && !data.media?.length) {
+            addMessage('(sin respuesta del bot)', 'bot');
+          }
         }
 
         if (data.sesion !== undefined) session.value = data.sesion;

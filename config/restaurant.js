@@ -9,6 +9,10 @@ module.exports = {
   telefono: '+54 11 1234-5678',
   direccion: 'Av. Corrientes 1234, CABA, Buenos Aires',
 
+  // Número de WhatsApp del dueño para recibir notificaciones (sin + ni espacios, ej: '5491112345678')
+  // null = deshabilitado
+  telefonoAdmin: null,
+
   // --- HORARIOS DE ATENCIÓN ---
   // null = día cerrado
   horarios: {
@@ -25,9 +29,6 @@ module.exports = {
   // El bot solo ofrecerá estos horarios al cliente
   franjasHorarias: ['12:00', '14:00', '20:00', '21:00', '22:00'],
 
-  // Máximo de mesas simultáneas por franja horaria
-  capacidadMaximaPorFranja: 5,
-
   // Máximo de personas aceptadas en una sola reserva
   maximoPersonasPorReserva: 12,
 
@@ -36,6 +37,26 @@ module.exports = {
 
   // Con cuántos días de anticipación máxima se puede reservar
   diasMaximosAnticipacion: 30,
+
+  // Duración real de cada reserva (lo que ocupa la mesa el cliente)
+  duracionReservaMinutos: 90,
+
+  // Buffer de limpieza entre reservas (no visible al cliente)
+  tiempoLimpiezaMinutos: 15,
+
+  // Cuántas mesas se pueden combinar para grupos grandes (2 = pares, 3 = tríos)
+  maxMesasCombinadas: 2,
+
+  // Mesas iniciales — se insertan en la BD solo si la tabla mesas está vacía al arrancar.
+  // Después de eso, se gestionan desde el panel admin.
+  mesasIniciales: [
+    { nombre: 'Mesa 1', capacidad: 2 },
+    { nombre: 'Mesa 2', capacidad: 2 },
+    { nombre: 'Mesa 3', capacidad: 4 },
+    { nombre: 'Mesa 4', capacidad: 4 },
+    { nombre: 'Mesa 5', capacidad: 6 },
+    { nombre: 'Mesa 6', capacidad: 8 },
+  ],
 
   // --- MENSAJES PERSONALIZABLES ---
   mensajeBienvenida: `¡Hola! 👋 Bienvenido a *La Parrilla de Don José*.
@@ -49,6 +70,17 @@ Soy el asistente virtual del restaurante y puedo ayudarte con:
 5️⃣ *Hablar con una persona*
 
 ¿En qué te puedo ayudar hoy? 😊`,
+
+  // --- MENÚ MULTIMEDIA (opcional) ---
+  // Si configurás esto, se envía en lugar del texto de menú de abajo.
+  // tipo: 'imagen' | 'pdf' | 'url' | null
+  // valor: ruta local (p. ej. './menu.jpg') o URL (https://...)
+  // caption: texto opcional que acompaña a la imagen o PDF
+  menuMedia: {
+    tipo: 'imagen',
+    valor: './img/Menu.jpg',
+    caption: 'Este es el menú?',
+  },
 
   // --- MENÚ DEL RESTAURANTE ---
   // Texto libre, usá *negritas* y _itálicas_ para formato WhatsApp
