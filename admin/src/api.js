@@ -101,3 +101,24 @@ export function agregarCombinacion(mesaId1, mesaId2) {
 export function eliminarCombinacion(mesaId1, mesaId2) {
   return request('/combinaciones', { method: 'DELETE', body: JSON.stringify({ mesaId1, mesaId2 }) })
 }
+
+export function getConfig() {
+  return request('/config')
+}
+
+export function actualizarConfig(data) {
+  return request('/config', { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export function getRestaurantes() {
+  return request('/restaurantes')
+}
+
+export function crearRestaurante(data) {
+  return request('/restaurantes', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export function abrirImpresion(fecha) {
+  const token = getToken()
+  window.open(`/admin/api/print?fecha=${encodeURIComponent(fecha)}&token=${token}`)
+}

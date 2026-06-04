@@ -1,88 +1,145 @@
 <script setup>
 import { ref } from 'vue'
-import { setToken, clearToken, getStats } from '../api.js'
+import { setToken, getStats } from '../api.js'
 
 const emit = defineEmits(['login'])
-
-const token   = ref('')
-const error   = ref('')
-const loading = ref(false)
+const token = ref('')
+const error = ref('')
+const cargando = ref(false)
 
 async function login() {
-  if (!token.value.trim()) return
-  loading.value = true
-  error.value   = ''
-  setToken(token.value.trim())
+  if (!token.value.trim()) { error.value = 'Ingresá el token de acceso'; return }
+  cargando.value = true
+  error.value = ''
   try {
+    setToken(token.value.trim())
     await getStats()
     emit('login')
   } catch {
-    error.value = 'Token incorrecto o error de conexión'
-    clearToken()
+    error.value = 'Token incorrecto. Verificá y volvé a intentar.'
+    import('../api.js').then(m => m.clearToken())
   } finally {
-    loading.value = false
+    cargando.value = false
   }
 }
 </script>
 
 <template>
-  <div class="wrap">
-    <div class="card">
-      <div class="icon">🍽️</div>
-      <h1>Panel de Reservas</h1>
-      <p>Ingresá tu token de administrador para continuar</p>
+  <div class="login-bg">
+    <div class="login-card">
+      <div class="login-logo">
+        <span class="logo-icon">🍽️</span>
+        <div>
+          <div class="logo-title">ReservaBot</div>
+          <div class="logo-sub">Panel de Administración</div>
+        </div>
+      </div>
+      <div class="login-divider"></div>
+      <p class="login-label">Token de acceso</p>
       <input
+        class="login-input"
         v-model="token"
         type="password"
-        placeholder="Token de administrador"
-        @keyup.enter="login"
+        placeholder="Ingresá tu token…"
+        @keydown.enter="login"
         autofocus
       />
-      <p v-if="error" class="error">{{ error }}</p>
-      <button @click="login" :disabled="loading || !token">
-        {{ loading ? 'Verificando…' : 'Ingresar' }}
+      <p v-if="error" class="login-error">{{ error }}</p>
+      <button class="login-btn" @click="login" :disabled="cargando">
+        <span v-if="!cargando">Ingresar →</span>
+        <span v-else>Verificando…</span>
       </button>
+      <p class="login-footer">Acceso restringido · Solo personal autorizado</p>
     </div>
   </div>
 </template>
 
 <style scoped>
-.wrap {
+.login-bg {
   min-height: 100vh;
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 1rem;
 }
-.card {
+
+.login-card {
   background: #fff;
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 2.5rem 2rem;
   width: 100%;
   max-width: 380px;
-  box-shadow: 0 4px 24px rgba(0,0,0,.1);
-  text-align: center;
+  box-shadow: 0 25px 50px rgba(0,0,0,.4);
+}
+
+.login-logo {
   display: flex;
-  flex-direction: column;
-  gap: .9rem;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
 }
-.icon { font-size: 2.5rem; }
-h1   { font-size: 1.3rem; font-weight: 700; color: #111827; }
-p    { color: #6b7280; font-size: .875rem; }
-input {
-  width: 100%;
-  padding: .6rem .9rem;
-  font-size: .95rem;
-}
-.error { color: #dc2626; font-size: .8rem; }
-button {
-  background: #111827;
-  color: #fff;
-  padding: .65rem;
-  font-size: .95rem;
+.logo-icon   { font-size: 2.5rem; line-height: 1; }
+.logo-title  { font-size: 1.25rem; font-weight: 800; color: #0f172a; letter-spacing: -.02em; }
+.logo-sub    { font-size: .75rem; color: #64748b; margin-top: 1px; }
+
+.login-divider { height: 1px; background: #e2e8f0; margin-bottom: 1.5rem; }
+
+.login-label {
+  font-size: .8rem;
   font-weight: 600;
-  width: 100%;
-  border-radius: 8px;
+  color: #475569;
+  margin-bottom: .5rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
 }
-button:hover:not(:disabled) { background: #374151; }
+
+.login-input {
+  width: 100%;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  padding: .75rem 1rem;
+  font-size: .95rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s;
+  background: #f8fafc;
+  box-sizing: border-box;
+}
+.login-input:focus { border-color: #6366f1; background: #fff; }
+
+.login-error {
+  margin-top: .5rem;
+  font-size: .8rem;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: .4rem .75rem;
+}
+
+.login-btn {
+  margin-top: 1rem;
+  width: 100%;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: .85rem;
+  font-size: .95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity .15s, transform .1s;
+  font-family: inherit;
+}
+.login-btn:hover:not(:disabled) { opacity: .92; transform: translateY(-1px); }
+.login-btn:active { transform: translateY(0); }
+.login-btn:disabled { opacity: .6; cursor: not-allowed; }
+
+.login-footer {
+  margin-top: 1rem;
+  text-align: center;
+  font-size: .72rem;
+  color: #94a3b8;
+}
 </style>

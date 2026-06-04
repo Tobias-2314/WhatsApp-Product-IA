@@ -88,6 +88,34 @@ class DBManager {
       );
     `);
 
+    // Config dinámica del restaurante (sobreescribe restaurant.js)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS configuracion (
+        id   INTEGER PRIMARY KEY DEFAULT 1,
+        data JSONB   NOT NULL DEFAULT '{}'
+      );
+    `);
+
+    // Multi-tenant: tabla de restaurantes (para SaaS)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS restaurantes (
+        id          SERIAL       PRIMARY KEY,
+        nombre      VARCHAR(200) NOT NULL,
+        slug        VARCHAR(50)  UNIQUE NOT NULL,
+        admin_token VARCHAR(200) NOT NULL,
+        whatsapp    VARCHAR(50),
+        plan        VARCHAR(20)  NOT NULL DEFAULT 'basico',
+        activo      BOOLEAN      NOT NULL DEFAULT true,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      ALTER TABLE reservas ADD COLUMN IF NOT EXISTS deposito_estado VARCHAR(20);
+      ALTER TABLE reservas ADD COLUMN IF NOT EXISTS deposito_monto  INTEGER;
+      ALTER TABLE reservas ADD COLUMN IF NOT EXISTS deposito_mp_id  VARCHAR(100);
+    `);
+
     // Posiciones en el plano del salón
     await pool.query(`
       ALTER TABLE mesas ADD COLUMN IF NOT EXISTS x_pos INTEGER DEFAULT NULL;
@@ -306,100 +334,51 @@ class DBManager {
   }
 
   async _asignarMesaExcluyendo(fecha, hora, personas, excludeId) {
-    const horaFin = this._calcularHoraFin(hora);
-
-    // 1. Obtener IDs de mesas ocupadas en este slot (soporta mesa_id simple y mesas_ids array)
-    const conflParams = [fecha, horaFin, hora];
+    const horaFin     = this._calcularHoraFin(hora);
     const conflCond   = excludeId ? ' AND r.id != $4' : '';
-    if (excludeId) conflParams.push(excludeId);
+    const conflParams = excludeId ? [fecha, horaFin, hora, excludeId] : [fecha, horaFin, hora];
 
-    const { rows: conflictos } = await pool.query(
-      `SELECT r.mesa_id, r.mesas_ids FROM reservas r
-       WHERE r.fecha = $1 AND r.estado = 'confirmada'
-         AND r.hora < $2 AND r.hora_fin > $3 ${conflCond}`,
-      conflParams
-    );
+    const [{ rows: conflictos }, { rows: todasMesas }, { rows: combRows }] = await Promise.all([
+      pool.query(
+        `SELECT r.mesa_id, r.mesas_ids FROM reservas r
+         WHERE r.fecha = $1 AND r.estado = 'confirmada'
+           AND r.hora < $2 AND r.hora_fin > $3 ${conflCond}`,
+        conflParams
+      ),
+      pool.query(`SELECT id, nombre, capacidad FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`),
+      pool.query(`SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`),
+    ]);
 
-    const ocupadasSet = new Set();
-    for (const r of conflictos) {
-      if (r.mesas_ids?.length) r.mesas_ids.forEach(id => ocupadasSet.add(parseInt(id)));
-      else if (r.mesa_id)       ocupadasSet.add(parseInt(r.mesa_id));
-    }
+    const ocupadasSet = _ocupadasDesdeConflictos(conflictos);
+    const libres      = todasMesas.filter(m => !ocupadasSet.has(m.id));
+    const combSet     = new Set(combRows.map(r => `${r.mesa_id_1}-${r.mesa_id_2}`));
 
-    // 2. Todas las mesas activas libres, ordenadas por capacidad (best-fit)
-    const { rows: todasMesas } = await pool.query(
-      `SELECT id, nombre, capacidad FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`
-    );
-    const libres = todasMesas.filter(m => !ocupadasSet.has(m.id));
-
-    // 3. Mesa individual (best-fit)
-    const single = libres.find(m => m.capacidad >= personas);
-    if (single) {
-      return { id: single.id, ids: [single.id], nombre: single.nombre, capacidad: single.capacidad };
-    }
-
-    // 4. Cargar combinaciones permitidas
-    const maxCombinadas = restaurante.maxMesasCombinadas ?? 2;
-    if (maxCombinadas < 2) return null;
-
-    const { rows: combRows } = await pool.query(
-      `SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`
-    );
-    const combSet = new Set(combRows.map(r => `${r.mesa_id_1}-${r.mesa_id_2}`));
-    const esPar = (a, b) => combSet.has(`${Math.min(a, b)}-${Math.max(a, b)}`);
-
-    // 5. Pares permitidos (best-fit)
-    let mejor = null;
-    for (let i = 0; i < libres.length; i++) {
-      for (let j = i + 1; j < libres.length; j++) {
-        if (!esPar(libres[i].id, libres[j].id)) continue;
-        const total = libres[i].capacidad + libres[j].capacidad;
-        if (total >= personas && (!mejor || total < mejor.capacidad)) {
-          mejor = {
-            id: libres[i].id,
-            ids: [libres[i].id, libres[j].id],
-            nombre: `${libres[i].nombre} + ${libres[j].nombre}`,
-            capacidad: total,
-          };
-        }
-      }
-    }
-    if (mejor) return mejor;
-
-    // 6. Tríos permitidos (solo si maxMesasCombinadas >= 3 y todos los pares están habilitados)
-    if (maxCombinadas >= 3) {
-      let mejorTrio = null;
-      for (let i = 0; i < libres.length; i++) {
-        for (let j = i + 1; j < libres.length; j++) {
-          if (!esPar(libres[i].id, libres[j].id)) continue;
-          for (let k = j + 1; k < libres.length; k++) {
-            if (!esPar(libres[i].id, libres[k].id)) continue;
-            if (!esPar(libres[j].id, libres[k].id)) continue;
-            const total = libres[i].capacidad + libres[j].capacidad + libres[k].capacidad;
-            if (total >= personas && (!mejorTrio || total < mejorTrio.capacidad)) {
-              mejorTrio = {
-                id: libres[i].id,
-                ids: [libres[i].id, libres[j].id, libres[k].id],
-                nombre: `${libres[i].nombre} + ${libres[j].nombre} + ${libres[k].nombre}`,
-                capacidad: total,
-              };
-            }
-          }
-        }
-      }
-      if (mejorTrio) return mejorTrio;
-    }
-
-    return null;
+    return _asignarDesdeLibres(libres, personas, combSet);
   }
 
   async obtenerFranjasDisponibles(fecha, franjasHorarias, personas) {
+    // 3 queries totales para todas las franjas (en lugar de 3 × N)
+    const [{ rows: reservasDelDia }, { rows: todasMesas }, { rows: combRows }] = await Promise.all([
+      pool.query(
+        `SELECT r.mesa_id, r.mesas_ids, r.hora, r.hora_fin FROM reservas r
+         WHERE r.fecha = $1 AND r.estado = 'confirmada'
+           AND (r.mesa_id IS NOT NULL OR r.mesas_ids IS NOT NULL)`,
+        [fecha]
+      ),
+      pool.query(`SELECT id, nombre, capacidad FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`),
+      pool.query(`SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`),
+    ]);
+
+    const combSet  = new Set(combRows.map(r => `${r.mesa_id_1}-${r.mesa_id_2}`));
     const resultado = [];
+
     for (const hora of franjasHorarias) {
-      const mesa = await this.asignarMesa(fecha, hora, personas);
-      if (mesa) {
-        resultado.push({ hora, combinada: mesa.ids.length > 1 });
-      }
+      const horaFin    = this._calcularHoraFin(hora);
+      const conflictos = reservasDelDia.filter(r => r.hora < horaFin && (r.hora_fin || '99:99') > hora);
+      const ocupadas   = _ocupadasDesdeConflictos(conflictos);
+      const libres     = todasMesas.filter(m => !ocupadas.has(m.id));
+      const mesa       = _asignarDesdeLibres(libres, personas, combSet);
+      if (mesa) resultado.push({ hora, combinada: mesa.ids.length > 1 });
     }
     return resultado;
   }
@@ -702,6 +681,52 @@ class DBManager {
     return { id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa, x_pos: r.x_pos ?? null, y_pos: r.y_pos ?? null };
   }
 
+  // ─── CONFIGURACIÓN ────────────────────────────────────────
+
+  async leerConfig() {
+    const { rows } = await pool.query('SELECT data FROM configuracion WHERE id = 1');
+    return rows[0]?.data || {};
+  }
+
+  async guardarConfig(campos) {
+    const actual = await this.leerConfig();
+    const nuevo  = { ...actual, ...campos };
+    await pool.query(
+      `INSERT INTO configuracion (id, data) VALUES (1, $1)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+      [JSON.stringify(nuevo)]
+    );
+    return nuevo;
+  }
+
+  // ─── RESTAURANTES (multi-tenant) ──────────────────────────
+
+  async listarRestaurantes() {
+    const { rows } = await pool.query(
+      `SELECT id, nombre, slug, whatsapp, plan, activo, created_at FROM restaurantes ORDER BY created_at DESC`
+    );
+    return rows;
+  }
+
+  async crearRestaurante({ nombre, slug, admin_token, whatsapp, plan }) {
+    const { rows } = await pool.query(
+      `INSERT INTO restaurantes (nombre, slug, admin_token, whatsapp, plan)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, nombre, slug, whatsapp, plan, activo`,
+      [nombre, slug, admin_token, whatsapp || null, plan || 'basico']
+    );
+    return rows[0];
+  }
+
+  // ─── MERCADOPAGO ──────────────────────────────────────────
+
+  async actualizarDepositoReserva(id, { estado, mp_id }) {
+    const { rows } = await pool.query(
+      `UPDATE reservas SET deposito_estado = $1, deposito_mp_id = $2 WHERE id = $3 RETURNING *`,
+      [estado, mp_id || null, id]
+    );
+    return rows[0] ? this._mapear(rows[0]) : null;
+  }
+
   // ─── PRIVADOS ─────────────────────────────────────────────
 
   _calcularHoraFin(hora) {
@@ -734,6 +759,9 @@ class DBManager {
       personas:             parseInt(r.personas, 10),
       estado:               r.estado,
       confirmacion_enviada: r.confirmacion_enviada ?? false,
+      deposito_estado:      r.deposito_estado || null,
+      deposito_monto:       r.deposito_monto  ? parseInt(r.deposito_monto) : null,
+      deposito_mp_id:       r.deposito_mp_id  || null,
     };
   }
 
@@ -749,4 +777,71 @@ class DBManager {
   }
 }
 
+// ─── HELPERS PUROS (sin DB) ───────────────────────────────────
+
+function _ocupadasDesdeConflictos(conflictos) {
+  const set = new Set();
+  for (const r of conflictos) {
+    if (r.mesas_ids?.length) r.mesas_ids.forEach(id => set.add(parseInt(id)));
+    else if (r.mesa_id)       set.add(parseInt(r.mesa_id));
+  }
+  return set;
+}
+
+function _asignarDesdeLibres(libres, personas, combSet) {
+  const esPar = (a, b) => combSet.has(`${Math.min(a, b)}-${Math.max(a, b)}`);
+
+  // Mesa individual (best-fit: la más chica que alcanza)
+  const single = libres.find(m => m.capacidad >= personas);
+  if (single) return { id: single.id, ids: [single.id], nombre: single.nombre, capacidad: single.capacidad };
+
+  const maxCombinadas = restaurante.maxMesasCombinadas ?? 2;
+  if (maxCombinadas < 2 || !combSet.size) return null;
+
+  // Pares permitidos (best-fit)
+  let mejor = null;
+  for (let i = 0; i < libres.length; i++) {
+    for (let j = i + 1; j < libres.length; j++) {
+      if (!esPar(libres[i].id, libres[j].id)) continue;
+      const total = libres[i].capacidad + libres[j].capacidad;
+      if (total >= personas && (!mejor || total < mejor.capacidad)) {
+        mejor = {
+          id: libres[i].id,
+          ids: [libres[i].id, libres[j].id],
+          nombre: `${libres[i].nombre} + ${libres[j].nombre}`,
+          capacidad: total,
+        };
+      }
+    }
+  }
+  if (mejor) return mejor;
+
+  // Tríos permitidos (solo si maxMesasCombinadas >= 3 y todos los pares están habilitados)
+  if (maxCombinadas >= 3) {
+    let mejorTrio = null;
+    for (let i = 0; i < libres.length; i++) {
+      for (let j = i + 1; j < libres.length; j++) {
+        if (!esPar(libres[i].id, libres[j].id)) continue;
+        for (let k = j + 1; k < libres.length; k++) {
+          if (!esPar(libres[i].id, libres[k].id)) continue;
+          if (!esPar(libres[j].id, libres[k].id)) continue;
+          const total = libres[i].capacidad + libres[j].capacidad + libres[k].capacidad;
+          if (total >= personas && (!mejorTrio || total < mejorTrio.capacidad)) {
+            mejorTrio = {
+              id: libres[i].id,
+              ids: [libres[i].id, libres[j].id, libres[k].id],
+              nombre: `${libres[i].nombre} + ${libres[j].nombre} + ${libres[k].nombre}`,
+              capacidad: total,
+            };
+          }
+        }
+      }
+    }
+    if (mejorTrio) return mejorTrio;
+  }
+
+  return null;
+}
+
 module.exports = new DBManager();
+module.exports.pool = pool;

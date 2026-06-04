@@ -5,7 +5,8 @@ import ReservasTable from './ReservasTable.vue'
 import MesasPanel from './MesasPanel.vue'
 import OcupacionPanel from './OcupacionPanel.vue'
 import AnalyticsPanel from './AnalyticsPanel.vue'
-import { getStats, getReservas, exportarCSV, clearToken, socket } from '../api.js'
+import ConfigPanel from './ConfigPanel.vue'
+import { getStats, getReservas, exportarCSV, clearToken, socket, abrirImpresion, getConfig } from '../api.js'
 
 const tabActiva = ref('reservas')
 
@@ -19,6 +20,14 @@ const error    = ref('')
 const filtroFecha  = ref('')  // input date: YYYY-MM-DD
 const filtroEstado = ref('todas')
 const filtroSearch = ref('')
+
+// Nombre del restaurante
+const nombreRestaurante = ref('Panel de Reservas')
+
+// Cargar nombre del restaurante
+getConfig().then(cfg => {
+  if (cfg.nombre) nombreRestaurante.value = cfg.nombre
+}).catch(() => {})
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -85,6 +94,20 @@ function exportar() {
   exportarCSV(params)
 }
 
+function imprimir() {
+  const fecha = filtroFecha.value
+    ? `${filtroFecha.value.split('-')[2]}/${filtroFecha.value.split('-')[1]}/${filtroFecha.value.split('-')[0]}`
+    : (() => {
+        const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }))
+        return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+      })()
+  abrirImpresion(fecha)
+}
+
+function onConfigUpdated(cfg) {
+  if (cfg.nombre) nombreRestaurante.value = cfg.nombre
+}
+
 // ─── Ciclo de vida ────────────────────────────────────────
 
 onMounted(() => {
@@ -105,17 +128,38 @@ onUnmounted(() => {
 
 <template>
   <div class="layout">
-    <!-- Topbar -->
     <header class="topbar">
-      <span class="topbar-title">🍽️ Panel de Reservas</span>
+      <div class="topbar-brand">
+        <span class="brand-icon">🍽️</span>
+        <div>
+          <div class="brand-name">{{ nombreRestaurante }}</div>
+          <div class="brand-sub">Panel de Administración</div>
+        </div>
+      </div>
+
       <nav class="tabs">
-        <button class="tab" :class="{ active: tabActiva === 'reservas' }"  @click="tabActiva = 'reservas'">Reservas</button>
-        <button class="tab" :class="{ active: tabActiva === 'ocupacion' }" @click="tabActiva = 'ocupacion'">Ocupación</button>
-        <button class="tab" :class="{ active: tabActiva === 'analytics' }" @click="tabActiva = 'analytics'">Analytics</button>
-        <button class="tab" :class="{ active: tabActiva === 'mesas' }"     @click="tabActiva = 'mesas'">Mesas</button>
+        <button class="tab" :class="{ active: tabActiva === 'reservas' }"       @click="tabActiva = 'reservas'">
+          <span class="tab-icon">📅</span> Reservas
+        </button>
+        <button class="tab" :class="{ active: tabActiva === 'ocupacion' }"      @click="tabActiva = 'ocupacion'">
+          <span class="tab-icon">🏠</span> Salón
+        </button>
+        <button class="tab" :class="{ active: tabActiva === 'analytics' }"      @click="tabActiva = 'analytics'">
+          <span class="tab-icon">📈</span> Analytics
+        </button>
+        <button class="tab" :class="{ active: tabActiva === 'mesas' }"          @click="tabActiva = 'mesas'">
+          <span class="tab-icon">🪑</span> Mesas
+        </button>
+        <button class="tab" :class="{ active: tabActiva === 'configuracion' }"  @click="tabActiva = 'configuracion'">
+          <span class="tab-icon">⚙️</span> Config
+        </button>
       </nav>
+
       <div class="topbar-right">
-        <span class="topbar-info" v-if="stats">{{ stats.hoy.fecha }}</span>
+        <div class="topbar-date" v-if="stats">
+          <span class="date-dot"></span>
+          {{ stats.hoy.fecha }}
+        </div>
         <button class="btn-salir" @click="salir">Salir</button>
       </div>
     </header>
@@ -124,42 +168,64 @@ onUnmounted(() => {
 
       <!-- ── PESTAÑA RESERVAS ── -->
       <template v-if="tabActiva === 'reservas'">
-        <!-- Stats -->
         <div class="stats" v-if="stats">
-          <StatsCard :value="stats.hoy.confirmadas"    label="Confirmadas hoy"   color="#059669" />
-          <StatsCard :value="stats.hoy.personas"       label="Personas hoy"      color="#6366f1" />
-          <StatsCard :value="stats.proximos7dias.total" label="Próximos 7 días"  color="#0891b2" />
-          <StatsCard :value="stats.hoy.canceladas"     label="Canceladas hoy"    color="#dc2626" />
-          <StatsCard :value="stats.hoy.no_shows || 0"  label="No-shows hoy"      color="#d97706" />
+          <StatsCard :value="stats.hoy.confirmadas"     label="Confirmadas hoy"  color="#059669" icon="✅" />
+          <StatsCard :value="stats.hoy.personas"        label="Personas hoy"     color="#6366f1" icon="👥" />
+          <StatsCard :value="stats.proximos7dias.total" label="Próx. 7 días"     color="#0891b2" icon="📆" />
+          <StatsCard :value="stats.hoy.canceladas"      label="Canceladas hoy"   color="#dc2626" icon="❌" />
+          <StatsCard :value="stats.hoy.no_shows || 0"   label="No-shows hoy"     color="#d97706" icon="⚠️" />
         </div>
         <div class="stats-skeleton" v-else>
           <div v-for="i in 5" :key="i" class="skeleton"></div>
         </div>
 
-        <!-- Filtros -->
-        <div class="filtros">
-          <input type="date" v-model="filtroFecha" title="Filtrar por fecha" />
-          <select v-model="filtroEstado">
-            <option value="todas">Todos los estados</option>
-            <option value="confirmada">Confirmadas</option>
-            <option value="cancelada">Canceladas</option>
-            <option value="no_show">No-shows</option>
-          </select>
-          <input type="text" v-model="filtroSearch" placeholder="Buscar por nombre o teléfono…" class="search" />
-          <button class="btn-buscar" @click="cargarReservas" :disabled="cargando">{{ cargando ? '…' : 'Buscar' }}</button>
-          <button class="btn-limpiar" @click="filtroFecha = ''; filtroEstado = 'todas'; filtroSearch = ''; cargarReservas()">Limpiar</button>
-          <button class="btn-export" @click="exportar" title="Exportar CSV con filtros activos">⬇ CSV</button>
+        <div class="toolbar">
+          <div class="filtros">
+            <div class="filtro-group">
+              <label class="filtro-label">Fecha</label>
+              <input type="date" v-model="filtroFecha" />
+            </div>
+            <div class="filtro-group">
+              <label class="filtro-label">Estado</label>
+              <select v-model="filtroEstado">
+                <option value="todas">Todos</option>
+                <option value="confirmada">Confirmadas</option>
+                <option value="cancelada">Canceladas</option>
+                <option value="no_show">No-shows</option>
+              </select>
+            </div>
+            <div class="filtro-group filtro-search">
+              <label class="filtro-label">Buscar</label>
+              <input type="text" v-model="filtroSearch" placeholder="Nombre o teléfono…" />
+            </div>
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn-action btn-buscar" @click="cargarReservas" :disabled="cargando">
+              {{ cargando ? '…' : '🔍 Buscar' }}
+            </button>
+            <button class="btn-action btn-limpiar" @click="filtroFecha = ''; filtroEstado = 'todas'; filtroSearch = ''; cargarReservas()">
+              Limpiar
+            </button>
+            <button class="btn-action btn-print" @click="imprimir" title="Imprimir reservas del día">
+              🖨️ Imprimir
+            </button>
+            <button class="btn-action btn-export" @click="exportar" title="Exportar CSV">
+              ⬇ CSV
+            </button>
+          </div>
         </div>
 
-        <!-- Error -->
-        <p v-if="error" class="error">{{ error }}</p>
+        <p v-if="error" class="error-msg">{{ error }}</p>
 
-        <!-- Tabla -->
         <ReservasTable :reservas="reservas" @cancelada="onCancelada" @noshow="onNoShow" />
-        <p class="footer">{{ reservas.length }} resultado(s) · actualización automática en tiempo real</p>
+
+        <p class="footer-info">
+          <span>{{ reservas.length }} resultado(s)</span>
+          <span class="realtime-dot">● En tiempo real</span>
+        </p>
       </template>
 
-      <!-- ── PESTAÑA OCUPACIÓN ── -->
+      <!-- ── PESTAÑA SALÓN ── -->
       <OcupacionPanel v-else-if="tabActiva === 'ocupacion'" />
 
       <!-- ── PESTAÑA ANALYTICS ── -->
@@ -168,72 +234,154 @@ onUnmounted(() => {
       <!-- ── PESTAÑA MESAS ── -->
       <MesasPanel v-else-if="tabActiva === 'mesas'" />
 
+      <!-- ── PESTAÑA CONFIG ── -->
+      <ConfigPanel v-else-if="tabActiva === 'configuracion'" @updated="onConfigUpdated" />
+
     </main>
   </div>
 </template>
 
 <style scoped>
-.layout { min-height: 100vh; display: flex; flex-direction: column; }
+.layout { min-height: 100vh; display: flex; flex-direction: column; background: #f8fafc; }
 
+/* ── Topbar ── */
 .topbar {
-  background: #111827;
-  color: #fff;
-  padding: .85rem 1.5rem;
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+  padding: 0 1.5rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,.25);
+  min-height: 60px;
+  gap: 1rem;
 }
-.topbar-title { font-size: 1rem; font-weight: 600; }
-.topbar-right  { display: flex; align-items: center; gap: 1rem; }
-.topbar-info   { font-size: .8rem; opacity: .65; }
-.btn-salir     { background: transparent; border: 1px solid rgba(255,255,255,.3); color: #fff; font-size: .8rem; padding: .3rem .7rem; }
-.btn-salir:hover { background: rgba(255,255,255,.1); }
-.tabs { display: flex; gap: .25rem; }
-.tab  { background: transparent; border: none; color: rgba(255,255,255,.6); font-size: .85rem; padding: .3rem .8rem; border-radius: 5px; cursor: pointer; font-family: inherit; transition: all .15s; }
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-shrink: 0;
+}
+.brand-icon { font-size: 1.5rem; }
+.brand-name { font-size: .95rem; font-weight: 800; color: #fff; letter-spacing: -.01em; white-space: nowrap; }
+.brand-sub  { font-size: .65rem; color: rgba(255,255,255,.45); white-space: nowrap; }
+
+.tabs {
+  display: flex;
+  gap: .15rem;
+  flex: 1;
+  justify-content: center;
+  overflow-x: auto;
+}
+.tab {
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,.55);
+  font-size: .8rem;
+  padding: .5rem .85rem;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  white-space: nowrap;
+}
+.tab-icon { font-size: .85rem; }
 .tab:hover  { background: rgba(255,255,255,.1); color: #fff; }
-.tab.active { background: rgba(255,255,255,.18); color: #fff; font-weight: 600; }
+.tab.active { background: rgba(255,255,255,.16); color: #fff; font-weight: 700; box-shadow: inset 0 -2px 0 #6366f1; }
 
-.main { max-width: 1200px; margin: 0 auto; padding: 1.5rem 1rem; width: 100%; flex: 1; display: flex; flex-direction: column; gap: 1.25rem; }
+.topbar-right { display: flex; align-items: center; gap: .75rem; flex-shrink: 0; }
+.topbar-date  { display: flex; align-items: center; gap: .4rem; font-size: .78rem; color: rgba(255,255,255,.6); }
+.date-dot     { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,.3); }
+.btn-salir    { background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2); color: #fff; font-size: .78rem; padding: .35rem .8rem; border-radius: 6px; cursor: pointer; font-family: inherit; transition: background .15s; white-space: nowrap; }
+.btn-salir:hover { background: rgba(255,255,255,.18); }
 
+/* ── Main ── */
+.main { max-width: 1280px; margin: 0 auto; padding: 1.5rem 1.25rem; width: 100%; flex: 1; display: flex; flex-direction: column; gap: 1.25rem; }
+
+/* ── Stats ── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(5, 1fr);
   gap: .85rem;
+}
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 }
 .stats-skeleton {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(5, 1fr);
   gap: .85rem;
 }
+@media (max-width: 900px) { .stats-skeleton { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); } }
 .skeleton {
   height: 90px;
-  border-radius: 10px;
-  background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+  border-radius: 12px;
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
   background-size: 200% 100%;
-  animation: shimmer 1.2s infinite;
+  animation: shimmer 1.3s infinite;
 }
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.filtros {
+/* ── Toolbar ── */
+.toolbar {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
   display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
   flex-wrap: wrap;
-  gap: .6rem;
-  align-items: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
 }
-.filtros input[type="date"],
-.filtros select { min-width: 150px; }
-.search { flex: 1; min-width: 200px; }
+.filtros { display: flex; gap: .85rem; flex-wrap: wrap; flex: 1; }
+.filtro-group { display: flex; flex-direction: column; gap: .3rem; }
+.filtro-label { font-size: .7rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+.filtro-group input, .filtro-group select {
+  border: 1.5px solid #e2e8f0;
+  border-radius: 7px;
+  padding: .45rem .7rem;
+  font-size: .875rem;
+  font-family: inherit;
+  outline: none;
+  background: #f8fafc;
+  transition: border-color .15s;
+  min-width: 130px;
+}
+.filtro-group input:focus, .filtro-group select:focus { border-color: #6366f1; background: #fff; }
+.filtro-search input { min-width: 200px; }
 
-.btn-buscar  { background: #111827; color: #fff; font-weight: 600; }
-.btn-buscar:hover:not(:disabled) { background: #374151; }
-.btn-limpiar { background: #f3f4f6; color: #374151; }
-.btn-limpiar:hover { background: #e5e7eb; }
-.btn-export  { background: #065f46; color: #fff; }
-.btn-export:hover { background: #047857; }
+.toolbar-actions { display: flex; gap: .5rem; align-items: flex-end; flex-wrap: wrap; }
+.btn-action {
+  padding: .5rem 1rem;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  font-size: .8rem;
+  font-family: inherit;
+  font-weight: 600;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.btn-buscar  { background: #0f172a; color: #fff; }
+.btn-buscar:hover:not(:disabled) { background: #1e293b; }
+.btn-limpiar { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.btn-limpiar:hover { background: #e2e8f0; }
+.btn-print   { background: #f0f4ff; color: #4338ca; border: 1px solid #c7d2fe; }
+.btn-print:hover { background: #e0e7ff; }
+.btn-export  { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+.btn-export:hover { background: #d1fae5; }
 
-.error  { color: #dc2626; font-size: .875rem; }
-.footer { color: #9ca3af; font-size: .75rem; text-align: right; }
+/* ── Error + Footer ── */
+.error-msg { color: #dc2626; font-size: .875rem; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: .6rem 1rem; }
+.footer-info { display: flex; justify-content: space-between; align-items: center; font-size: .75rem; color: #94a3b8; padding: 0 .25rem; }
+.realtime-dot { color: #22c55e; font-weight: 600; }
 </style>

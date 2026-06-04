@@ -5,7 +5,7 @@
 const sessionManager = require('./sessions/sessionManager');
 const ai = require('./ai');
 const sheets = require('./db');
-const restaurante = require('../config/restaurant');
+const configManager = require('./configManager');
 
 class Bot {
   constructor() {
@@ -44,8 +44,9 @@ class Bot {
   }
 
   async _notificarAdmin(mensaje) {
-    if (!restaurante.telefonoAdmin) return;
-    await this._enviar(restaurante.telefonoAdmin, mensaje);
+    const cfg = configManager.get();
+    if (!cfg.telefonoAdmin) return;
+    await this._enviar(cfg.telefonoAdmin, mensaje);
   }
 
   // ─── PROCESAMIENTO PRINCIPAL ──────────────────────────────
@@ -83,6 +84,7 @@ class Bot {
     if (respuestaAI.extractedData) {
       const { nombre, fecha, hora, personas } = respuestaAI.extractedData;
 
+      const cfg = configManager.get();
       if (respuestaAI.action === 'modify_reservation') {
         if (!sesion.modificacion) sesion.modificacion = { fecha: null, hora: null, personas: null };
         if (fecha && this._esFechaValida(fecha)) sesion.modificacion.fecha = fecha;
@@ -92,7 +94,7 @@ class Bot {
         }
         if (personas) {
           const p = parseInt(personas, 10);
-          if (!isNaN(p) && p >= 1 && p <= restaurante.maximoPersonasPorReserva) {
+          if (!isNaN(p) && p >= 1 && p <= cfg.maximoPersonasPorReserva) {
             sesion.modificacion.personas = p;
           }
         }
@@ -105,7 +107,7 @@ class Bot {
         }
         if (personas) {
           const p = parseInt(personas, 10);
-          if (!isNaN(p) && p >= 1 && p <= restaurante.maximoPersonasPorReserva) {
+          if (!isNaN(p) && p >= 1 && p <= cfg.maximoPersonasPorReserva) {
             sesion.reservaPendiente.personas = p;
           }
         }
@@ -140,12 +142,13 @@ class Bot {
       case 'check_availability': return await this._verificarDisponibilidad(sesion);
       case 'add_waitlist':       return await this._agregarListaEspera(sesion);
       case 'show_menu': {
-        const m = restaurante.menuMedia;
+        const cfg = configManager.get();
+        const m = cfg.menuMedia;
         if (m?.tipo && m?.valor) {
           await this._enviarMedia(sesion.telefono, m);
           return null;
         }
-        return restaurante.menu;
+        return cfg.menu;
       }
       case 'show_reservations': return await this._mostrarReservas(sesion);
       case 'transfer_human':    sesion.modoHumano = true; return null;
@@ -198,12 +201,12 @@ class Bot {
           `  • 👥 Personas: ${personas}\n` +
           `  • 🪑 Mesa: ${mesa.nombre}${combinada ? ' _(mesas combinadas)_' : ''}\n\n` +
           `_Guardá el ID por si necesitás cancelar o consultar._\n` +
-          `¡Nos vemos pronto en ${restaurante.nombre}! 🍽️`
+          `¡Nos vemos pronto en ${configManager.get().nombre}! 🍽️`
         );
 
       } catch (error) {
         console.error('❌ Error guardando reserva:', error);
-        return `❌ Hubo un problema técnico al guardar la reserva. Por favor, intentá de nuevo o llamá al ${restaurante.telefono}.`;
+        return `❌ Hubo un problema técnico al guardar la reserva. Por favor, intentá de nuevo o llamá al ${configManager.get().telefono}.`;
       }
     });
   }
@@ -218,11 +221,12 @@ class Bot {
 
       const fechaReserva = this._parsearFechaAR(reserva.fecha);
       if (fechaReserva) {
+        const cfg = configManager.get();
         const horasRestantes = (fechaReserva - new Date()) / 1000 / 3600;
-        if (horasRestantes < restaurante.horasMinimaCancelacion) {
+        if (horasRestantes < cfg.horasMinimaCancelacion) {
           return (
-            `❌ No podés cancelar con menos de ${restaurante.horasMinimaCancelacion} horas de anticipación.\n` +
-            `Para casos urgentes, llamá al ${restaurante.telefono}.`
+            `❌ No podés cancelar con menos de ${cfg.horasMinimaCancelacion} horas de anticipación.\n` +
+            `Para casos urgentes, llamá al ${cfg.telefono}.`
           );
         }
       }
@@ -253,7 +257,7 @@ class Bot {
 
     } catch (error) {
       console.error('❌ Error cancelando reserva:', error);
-      return `Hubo un error al cancelar. Por favor, llamá al ${restaurante.telefono}.`;
+      return `Hubo un error al cancelar. Por favor, llamá al ${configManager.get().telefono}.`;
     }
   }
 
@@ -307,7 +311,7 @@ class Bot {
 
     } catch (error) {
       console.error('❌ Error modificando reserva:', error);
-      return `Hubo un problema al modificar la reserva. Por favor, llamá al ${restaurante.telefono}.`;
+      return `Hubo un problema al modificar la reserva. Por favor, llamá al ${configManager.get().telefono}.`;
     }
   }
 
@@ -337,7 +341,7 @@ class Bot {
       `  • 📅 Fecha: ${reserva.fecha}\n` +
       `  • 🕐 Horario: ${reserva.hora} – ${reserva.hora_fin} hs\n` +
       `  • 👥 Personas: ${reserva.personas}\n\n` +
-      `¡Nos vemos pronto en ${restaurante.nombre}! 🍽️`
+      `¡Nos vemos pronto en ${configManager.get().nombre}! 🍽️`
     );
   }
 
@@ -361,7 +365,7 @@ class Bot {
       );
     } catch (error) {
       console.error('❌ Error agregando lista de espera:', error);
-      return `Hubo un problema al anotarte. Intentá de nuevo o llamá al ${restaurante.telefono}.`;
+      return `Hubo un problema al anotarte. Intentá de nuevo o llamá al ${configManager.get().telefono}.`;
     }
   }
 
@@ -386,7 +390,7 @@ class Bot {
 
   async _obtenerDisponibilidadSegura(fecha, personas = 1) {
     try {
-      return await sheets.obtenerFranjasDisponibles(fecha, restaurante.franjasHorarias, personas);
+      return await sheets.obtenerFranjasDisponibles(fecha, configManager.get().franjasHorarias, personas);
     } catch {
       return null;
     }
@@ -408,19 +412,20 @@ class Bot {
     hoy.setHours(0, 0, 0, 0);
     if (fecha < hoy) return false;
     const maxFecha = new Date(hoy);
-    maxFecha.setDate(hoy.getDate() + restaurante.diasMaximosAnticipacion);
+    maxFecha.setDate(hoy.getDate() + configManager.get().diasMaximosAnticipacion);
     return fecha <= maxFecha;
   }
 
   _normalizarHora(horaStr) {
     if (!horaStr || !/^\d{1,2}:\d{2}$/.test(horaStr)) return null;
-    if (restaurante.franjasHorarias.includes(horaStr)) return horaStr;
+    const franjasHorarias = configManager.get().franjasHorarias;
+    if (franjasHorarias.includes(horaStr)) return horaStr;
     const [hh, mm] = horaStr.split(':').map(Number);
     if (isNaN(hh) || isNaN(mm)) return null;
     const minutos = hh * 60 + mm;
     let mejorFranja = null;
     let menorDif = Infinity;
-    for (const franja of restaurante.franjasHorarias) {
+    for (const franja of franjasHorarias) {
       const [fh, fm] = franja.split(':').map(Number);
       const dif = Math.abs(minutos - (fh * 60 + fm));
       if (dif < menorDif) { menorDif = dif; mejorFranja = franja; }

@@ -22,7 +22,7 @@ const { Server } = require('socket.io');
 
 const bot = require('./bot');
 const db  = require('./db');
-const restaurante = require('../config/restaurant');
+const configManager = require('./configManager');
 const { crearAdminRouter } = require('./admin');
 const { crearTestRouter }  = require('./test');
 
@@ -58,7 +58,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/img',   express.static(path.join(__dirname, '../img')));
-app.use('/admin', crearAdminRouter(io));
+app.use('/admin', crearAdminRouter(io, configManager));
 app.use('/test',  crearTestRouter());
 
 httpServer.listen(PORT, '0.0.0.0', () => logger.info(`🔍 Health check en :${PORT} · Panel admin en /admin · Simulador en /test`));
@@ -120,7 +120,7 @@ async function enviarConfirmaciones(sock) {
       await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
         text:
           `🍽️ *¡Recordatorio de reserva!*\n\n` +
-          `Hola ${reserva.nombre}! Te recordamos tu reserva en *${restaurante.nombre}*:\n\n` +
+          `Hola ${reserva.nombre}! Te recordamos tu reserva en *${configManager.get().nombre}*:\n\n` +
           `  • 📅 Fecha: ${reserva.fecha}\n` +
           `  • 🕐 Hora: ${reserva.hora}\n` +
           `  • 👥 Personas: ${reserva.personas}\n\n` +
@@ -145,7 +145,7 @@ async function enviarAvisosFinal(sock) {
       await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
         text:
           `⏰ *¡Tu reserva es en 2 horas!*\n\n` +
-          `Hola ${reserva.nombre}! Tu mesa en *${restaurante.nombre}* te espera a las *${reserva.hora}*.\n\n` +
+          `Hola ${reserva.nombre}! Tu mesa en *${configManager.get().nombre}* te espera a las *${reserva.hora}*.\n\n` +
           `Si no podés venir, escribinos ahora para liberarla. ¡Hasta pronto! 😊`,
       });
 
@@ -187,6 +187,12 @@ async function iniciarBot() {
   await db.inicializar();
   estadoServicio.db = 'ok';
   logger.info('✅ Base de datos lista');
+
+  // 1b. Inicializar config dinámica (merge DB + restaurant.js)
+  const { pool } = require('./db');
+  configManager.setPool(pool);
+  await configManager.init();
+  logger.info('✅ Configuración dinámica cargada');
 
   // 2. Cargar estado de autenticación de WhatsApp
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -236,7 +242,7 @@ async function iniciarBot() {
       logger.error(`❌ Error enviando media a ${telefono}: ${err.message}`);
       // Fallback: enviar el menú en texto plano
       try {
-        await sock.sendMessage(jid, { text: restaurante.menu });
+        await sock.sendMessage(jid, { text: configManager.get().menu });
       } catch { /* nada más que hacer */ }
     }
   });

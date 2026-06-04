@@ -3,7 +3,7 @@
 // ============================================================
 
 const Groq = require('groq-sdk');
-const restaurante = require('../config/restaurant');
+const configManager = require('./configManager');
 
 class AIManager {
   constructor() {
@@ -18,6 +18,7 @@ class AIManager {
   }
 
   _construirSystemPrompt(sesion, franjasDisponibles) {
+    const restaurante = configManager.get();
     const ahora = new Date();
     const fechaActual = ahora.toLocaleDateString('es-AR', {
       timeZone: 'America/Argentina/Buenos_Aires',
@@ -154,14 +155,15 @@ FORMATO DE RESPUESTA OBLIGATORIO (JSON exacto, sin markdown):
   }
 
   _fallback(estado) {
+    const cfg = configManager.get();
     const mensajes = {
-      inicio: `¡Hola! Soy el asistente de ${restaurante.nombre}. Podés pedirme: *hacer una reserva*, *consultar tu reserva*, *cancelar*, *ver el menú* o *hablar con una persona*.`,
+      inicio: `¡Hola! Soy el asistente de ${cfg.nombre}. Podés pedirme: *hacer una reserva*, *consultar tu reserva*, *cancelar*, *ver el menú* o *hablar con una persona*.`,
       recolectando: `Disculpá, tuve un problema técnico. ¿Podés repetir tu mensaje?`,
       confirmando: `Disculpá, tuve un problema. ¿Confirmás la reserva? Respondé *sí* para confirmar o *no* para cancelar.`,
     };
 
     return {
-      response: mensajes[estado] || `Disculpá el inconveniente. Para reservas llamá al ${restaurante.telefono} o intentá de nuevo en un momento.`,
+      response: mensajes[estado] || `Disculpá el inconveniente. Para reservas llamá al ${cfg.telefono} o intentá de nuevo en un momento.`,
       action: 'none',
       extractedData: { nombre: null, fecha: null, hora: null, personas: null },
       estado: estado || 'inicio',
