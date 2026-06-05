@@ -6,15 +6,17 @@ const sessionManager = require('./sessions/sessionManager');
 const ai = require('./ai');
 const sheets = require('./db');
 const configManager = require('./configManager');
+const { t } = require('./i18n');
 
 class Bot {
   constructor() {
-    this._enviadorMensajes  = null;
-    this._enviadorMedia     = null;
-    this._onEnvio           = null;
-    this._onEnvioMedia      = null;
-    this._onReservaChange   = null;
-    this._locks             = new Map();
+    this._enviadorMensajes    = null;
+    this._enviadorMedia       = null;
+    this._enviadorInteractivo = null;
+    this._onEnvio             = null;
+    this._onEnvioMedia        = null;
+    this._onReservaChange     = null;
+    this._locks               = new Map();
   }
 
   _conLock(key, fn) {
@@ -27,11 +29,12 @@ class Bot {
       .finally(() => release());
   }
 
-  setEnviadorMensajes(fn)  { this._enviadorMensajes = fn; }
-  setEnviadorMedia(fn)     { this._enviadorMedia = fn; }
-  onEnvio(fn)              { this._onEnvio = fn; }
-  onEnvioMedia(fn)         { this._onEnvioMedia = fn; }
-  onReservaChange(fn)      { this._onReservaChange = fn; }
+  setEnviadorMensajes(fn)      { this._enviadorMensajes = fn; }
+  setEnviadorMedia(fn)         { this._enviadorMedia = fn; }
+  setEnviadorInteractivo(fn)   { this._enviadorInteractivo = fn; }
+  onEnvio(fn)                  { this._onEnvio = fn; }
+  onEnvioMedia(fn)             { this._onEnvioMedia = fn; }
+  onReservaChange(fn)          { this._onReservaChange = fn; }
 
   async _enviar(telefono, mensaje) {
     if (this._enviadorMensajes) await this._enviadorMensajes(telefono, mensaje);
@@ -63,6 +66,14 @@ class Bot {
       return;
     }
 
+    // Encuesta post-visita: capturar puntuación antes de pasar a la IA
+    if (sesion.estado === 'encuesta') {
+      const msg = await this._procesarRespuestaEncuesta(sesion, mensaje);
+      await sessionManager.actualizarSesion(telefono, sesion);
+      await this._enviar(telefono, msg);
+      return;
+    }
+
     // Pre-cargar nombre del cliente conocido en la sesión nueva
     if (sesion.estado === 'inicio' && !sesion.historialConversacion.length && !sesion.reservaPendiente.nombre) {
       try {
@@ -87,7 +98,7 @@ class Bot {
       const cfg = configManager.get();
       if (respuestaAI.action === 'modify_reservation') {
         if (!sesion.modificacion) sesion.modificacion = { fecha: null, hora: null, personas: null };
-        if (fecha && this._esFechaValida(fecha)) sesion.modificacion.fecha = fecha;
+        if (fecha && await this._esFechaValida(fecha)) sesion.modificacion.fecha = fecha;
         if (hora) {
           const horaFranja = this._normalizarHora(hora);
           if (horaFranja) sesion.modificacion.hora = horaFranja;
@@ -100,7 +111,7 @@ class Bot {
         }
       } else {
         if (nombre) sesion.reservaPendiente.nombre = nombre;
-        if (fecha && this._esFechaValida(fecha)) sesion.reservaPendiente.fecha = fecha;
+        if (fecha && await this._esFechaValida(fecha)) sesion.reservaPendiente.fecha = fecha;
         if (hora) {
           const horaFranja = this._normalizarHora(hora);
           if (horaFranja) sesion.reservaPendiente.hora = horaFranja;
@@ -123,12 +134,17 @@ class Bot {
       sesion.historialConversacion = sesion.historialConversacion.slice(-20);
     }
 
-    sessionManager.actualizarSesion(telefono, sesion);
+    await sessionManager.actualizarSesion(telefono, sesion);
 
     await this._enviar(telefono, respuestaAI.response);
 
     if (mensajeExtra) {
       await this._enviar(telefono, mensajeExtra);
+    }
+
+    // En el primer intercambio de una sesión nueva, ofrecer menú interactivo
+    if (sesion.historialConversacion.length === 2) {
+      this._enviarListaMenu(telefono).catch(() => {});
     }
   }
 
@@ -160,60 +176,50 @@ class Bot {
     const { nombre, fecha, hora, personas } = sesion.reservaPendiente;
     if (!nombre || !fecha || !hora || !personas) return null;
 
-    return this._conLock(`franja:${fecha}|${hora}`, async () => {
-      try {
-        const mesa = await sheets.asignarMesa(fecha, hora, personas);
+    try {
+      const resultado = await sheets.guardarReservaAtomico({
+        telefono: sesion.telefono, nombre, fecha, hora, personas,
+      });
 
-        if (!mesa) {
-          // No hay mesa — proponer lista de espera
-          sesion.estado = 'recolectando';
-          sesion.reservaPendiente.hora = null;
-          sesion.listaEsperaDisponible = { fecha, hora, personas, nombre };
-          return (
-            `❌ No hay mesas disponibles para ${hora} el ${fecha}.\n\n` +
-            `¿Querés que te avise si se libera un lugar? Respondé *SÍ* y te anotamos en la lista de espera. 😊`
-          );
-        }
-
-        const reserva = await sheets.guardarReserva({
-          telefono: sesion.telefono, nombre, fecha, hora, personas, mesasIds: mesa.ids,
-        });
-
-        // Memoria de cliente
-        sheets.upsertCliente({ telefono: sesion.telefono, nombre, fecha }).catch(() => {});
-
-        sesion.reservaPendiente = { nombre: null, fecha: null, hora: null, personas: null };
-        sesion.listaEsperaDisponible = null;
-        sesion.estado = 'completado';
-
-        // Notificar admin y socket
-        this._notificarAdmin(`🆕 *Nueva reserva*\n${nombre} — ${fecha} ${hora} — ${personas} pers.\nID: ${reserva.id}`).catch(() => {});
-        if (this._onReservaChange) this._onReservaChange('nueva', { ...reserva, mesa_nombre: mesa.nombre });
-
-        const combinada = mesa.ids.length > 1;
-        return (
-          `✅ *¡Reserva confirmada!*\n\n` +
-          `📋 *Resumen de tu reserva:*\n` +
-          `  • 🔖 ID: \`${reserva.id}\`\n` +
-          `  • 👤 Nombre: ${nombre}\n` +
-          `  • 📅 Fecha: ${fecha}\n` +
-          `  • 🕐 Horario: ${hora} – ${reserva.hora_fin} hs\n` +
-          `  • 👥 Personas: ${personas}\n` +
-          `  • 🪑 Mesa: ${mesa.nombre}${combinada ? ' _(mesas combinadas)_' : ''}\n\n` +
-          `_Guardá el ID por si necesitás cancelar o consultar._\n` +
-          `¡Nos vemos pronto en ${configManager.get().nombre}! 🍽️`
-        );
-
-      } catch (error) {
-        console.error('❌ Error guardando reserva:', error);
-        return `❌ Hubo un problema técnico al guardar la reserva. Por favor, intentá de nuevo o llamá al ${configManager.get().telefono}.`;
+      if (!resultado) {
+        sesion.estado = 'recolectando';
+        sesion.reservaPendiente.hora = null;
+        sesion.listaEsperaDisponible = { fecha, hora, personas, nombre };
+        const _idioma = configManager.get().idioma || 'es';
+        return `${t(_idioma, 'sinDisponibilidad', hora, fecha)}\n\n${t(_idioma, 'listaEspera')}`;
       }
-    });
+
+      const { reserva, mesa } = resultado;
+
+      sheets.upsertCliente({ telefono: sesion.telefono, nombre, fecha }).catch(e => console.error('⚠️ upsertCliente:', e.message));
+
+      sesion.reservaPendiente = { nombre: null, fecha: null, hora: null, personas: null };
+      sesion.listaEsperaDisponible = null;
+      sesion.estado = 'completado';
+
+      this._notificarAdmin(`🆕 *Nueva reserva*\n${nombre} — ${fecha} ${hora} — ${personas} pers.\nID: ${reserva.id}`).catch(e => console.error('⚠️ notificarAdmin:', e.message));
+      if (this._onReservaChange) this._onReservaChange('nueva', { ...reserva, mesa_nombre: mesa.nombre });
+
+      const combinada = mesa.ids.length > 1;
+      const _cfg = configManager.get();
+      return t(_cfg.idioma || 'es', 'reservaConfirmada', {
+        id: reserva.id, nombre, fecha, hora,
+        hora_fin: reserva.hora_fin, personas,
+        mesa: `${mesa.nombre}${combinada ? ' _(mesas combinadas)_' : ''}`,
+        restaurante: _cfg.nombre,
+      });
+
+    } catch (error) {
+      console.error('❌ Error guardando reserva:', error);
+      const _cfg2 = configManager.get();
+      return t(_cfg2.idioma || 'es', 'errorTecnico', _cfg2.telefono);
+    }
   }
 
   async _cancelarReserva(sesion) {
     try {
-      const reserva = await sheets.cancelarReserva(sesion.telefono);
+      // Obtener reserva ANTES de cancelar para poder validar sin efectos secundarios
+      const reserva = await sheets.obtenerReservaActiva(sesion.telefono);
 
       if (!reserva) {
         return `No encontré ninguna reserva activa para tu número. ¿Tenés el ID de la reserva? Escribímelo y lo busco.`;
@@ -222,7 +228,9 @@ class Bot {
       const fechaReserva = this._parsearFechaAR(reserva.fecha);
       if (fechaReserva) {
         const cfg = configManager.get();
-        const horasRestantes = (fechaReserva - new Date()) / 1000 / 3600;
+        const [hh, mm] = (reserva.hora || '00:00').split(':').map(Number);
+        fechaReserva.setHours(hh, mm, 0, 0);
+        const horasRestantes = (fechaReserva - new Date()) / 3_600_000;
         if (horasRestantes < cfg.horasMinimaCancelacion) {
           return (
             `❌ No podés cancelar con menos de ${cfg.horasMinimaCancelacion} horas de anticipación.\n` +
@@ -231,33 +239,37 @@ class Bot {
         }
       }
 
+      // Validación pasada — cancelar por ID para garantizar que es la reserva correcta
+      const cancelada = await sheets.cancelarReserva(sesion.telefono, reserva.id);
+      if (!cancelada) {
+        return `No pude cancelar la reserva. Es posible que ya haya sido cancelada. Escribime el ID y lo verifico.`;
+      }
+
       sesion.estado = 'inicio';
 
-      // Notificar admin y socket
-      this._notificarAdmin(`❌ *Cancelación*\n${reserva.nombre} — ${reserva.fecha} ${reserva.hora}`).catch(() => {});
-      if (this._onReservaChange) this._onReservaChange('cancelada', reserva);
+      this._notificarAdmin(`❌ *Cancelación*\n${cancelada.nombre} — ${cancelada.fecha} ${cancelada.hora}`).catch(e => console.error('⚠️ notificarAdmin:', e.message));
+      if (this._onReservaChange) this._onReservaChange('cancelada', cancelada);
 
-      // Notificar al primero en lista de espera si hay
       try {
-        const enEspera = await sheets.obtenerPrimeraListaEspera(reserva.fecha, reserva.hora, reserva.personas);
+        const enEspera = await sheets.obtenerPrimeraListaEspera(cancelada.fecha, cancelada.hora, cancelada.personas);
         if (enEspera) {
           await sheets.marcarListaEsperaNotificada(enEspera.id);
+          const _idioma = configManager.get().idioma || 'es';
           await this._enviar(enEspera.telefono,
-            `🎉 *¡Buenas noticias${enEspera.nombre ? ', ' + enEspera.nombre : ''}!*\n\n` +
-            `Se liberó una mesa para el *${reserva.fecha}* a las *${reserva.hora}*.\n` +
-            `Tenés 30 minutos para confirmar respondiendo a este mensaje. ¡Apurate! 😊`
+            t(_idioma, 'esperaLiberada', { nombre: enEspera.nombre, fecha: cancelada.fecha, hora: cancelada.hora })
           );
         }
       } catch { /* no crítico */ }
 
       return (
-        `✅ Tu reserva del *${reserva.fecha}* a las *${reserva.hora}* fue cancelada exitosamente.\n` +
+        `✅ Tu reserva del *${cancelada.fecha}* a las *${cancelada.hora}* fue cancelada exitosamente.\n` +
         `Si querés hacer una nueva reserva, decime y te ayudo. 😊`
       );
 
     } catch (error) {
       console.error('❌ Error cancelando reserva:', error);
-      return `Hubo un error al cancelar. Por favor, llamá al ${configManager.get().telefono}.`;
+      const _cfg = configManager.get();
+      return t(_cfg.idioma || 'es', 'errorTecnico', _cfg.telefono);
     }
   }
 
@@ -300,13 +312,6 @@ class Bot {
       const nuevaHora      = hora     || actual.hora;
       const nuevasPersonas = personas || actual.personas;
 
-      const cambiaSlot = nuevaFecha !== actual.fecha || nuevaHora !== actual.hora || nuevasPersonas !== actual.personas;
-      if (cambiaSlot) {
-        return this._conLock(`franja:${nuevaFecha}|${nuevaHora}`, () =>
-          this._aplicarModificacion(sesion, actual, nuevaFecha, nuevaHora, nuevasPersonas)
-        );
-      }
-
       return this._aplicarModificacion(sesion, actual, nuevaFecha, nuevaHora, nuevasPersonas);
 
     } catch (error) {
@@ -330,7 +335,7 @@ class Bot {
     sesion.modificacion = null;
     sesion.estado = 'completado';
 
-    this._notificarAdmin(`✏️ *Modificación*\n${reserva.nombre} — ${reserva.fecha} ${reserva.hora} — ${reserva.personas} pers.`).catch(() => {});
+    this._notificarAdmin(`✏️ *Modificación*\n${reserva.nombre} — ${reserva.fecha} ${reserva.hora} — ${reserva.personas} pers.`).catch(e => console.error('⚠️ notificarAdmin:', e.message));
     if (this._onReservaChange) this._onReservaChange('modificada', reserva);
 
     return (
@@ -388,6 +393,50 @@ class Bot {
 
   // ─── HELPERS ──────────────────────────────────────────────
 
+  async _enviarListaMenu(telefono) {
+    if (!this._enviadorInteractivo) return;
+    const cfg = configManager.get();
+    await this._enviadorInteractivo(telefono, {
+      text: '¿En qué te puedo ayudar?',
+      footer: cfg.nombre,
+      title: 'Menú principal',
+      buttonText: 'Ver opciones',
+      sections: [{
+        title: 'Opciones',
+        rows: [
+          { title: '📅 Hacer una reserva',    rowId: 'reservar',     description: 'Reservar una mesa' },
+          { title: '🔍 Ver mis reservas',     rowId: 'ver_reserva',  description: 'Consultar reservas activas' },
+          { title: '❌ Cancelar reserva',     rowId: 'cancelar',     description: 'Cancelar una reserva' },
+          { title: '📋 Ver el menú',          rowId: 'menu',         description: 'Ver la carta del restaurante' },
+        ],
+      }],
+    });
+  }
+
+  async _procesarRespuestaEncuesta(sesion, mensaje) {
+    const cfg      = configManager.get();
+    const idioma   = cfg.idioma || 'es';
+    const puntuacion = parseInt(mensaje.trim(), 10);
+
+    if (isNaN(puntuacion) || puntuacion < 1 || puntuacion > 5) {
+      return t(idioma, 'encuestaInvalida');
+    }
+
+    try {
+      await sheets.guardarResena({
+        reservaId: sesion.encuestaReservaId,
+        telefono:  sesion.telefono,
+        puntuacion,
+      });
+    } catch (e) {
+      console.error('⚠️ guardarResena:', e.message);
+    }
+
+    sesion.estado           = 'inicio';
+    sesion.encuestaReservaId = null;
+    return t(idioma, 'encuestaGracias', puntuacion);
+  }
+
   async _obtenerDisponibilidadSegura(fecha, personas = 1) {
     try {
       return await sheets.obtenerFranjasDisponibles(fecha, configManager.get().franjasHorarias, personas);
@@ -405,15 +454,19 @@ class Bot {
     return fecha;
   }
 
-  _esFechaValida(fechaStr) {
+  async _esFechaValida(fechaStr) {
     const fecha = this._parsearFechaAR(fechaStr);
     if (!fecha) return false;
-    const hoy = new Date();
-    hoy.setHours(0, 0, 0, 0);
-    if (fecha < hoy) return false;
-    const maxFecha = new Date(hoy);
-    maxFecha.setDate(hoy.getDate() + configManager.get().diasMaximosAnticipacion);
-    return fecha <= maxFecha;
+    const hoyAR = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+    hoyAR.setHours(0, 0, 0, 0);
+    if (fecha < hoyAR) return false;
+    const maxFecha = new Date(hoyAR);
+    maxFecha.setDate(hoyAR.getDate() + configManager.get().diasMaximosAnticipacion);
+    if (fecha > maxFecha) return false;
+    try {
+      if (await sheets.esFechaBloqueada(fechaStr)) return false;
+    } catch { /* si falla DB, no bloquear */ }
+    return true;
   }
 
   _normalizarHora(horaStr) {

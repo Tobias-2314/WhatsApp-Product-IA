@@ -23,8 +23,11 @@ const { Server } = require('socket.io');
 const bot = require('./bot');
 const db  = require('./db');
 const configManager = require('./configManager');
+const { t } = require('./i18n');
 const { crearAdminRouter } = require('./admin');
 const { crearTestRouter }  = require('./test');
+const sessionManager           = require('./sessions/sessionManager');
+const { procesarComandoStaff } = require('./staffCommands');
 
 // ─── LOGGER ──────────────────────────────────────────────────
 
@@ -106,28 +109,22 @@ const MAX_REINTENTOS   = 3;
 // ─── RECORDATORIOS AUTOMÁTICOS ───────────────────────────────
 // Scheduler 1 (24h antes): pide confirmación de asistencia.
 // Scheduler 2 (2h antes): aviso final solo a quienes confirmaron.
-// Usa Sets en memoria para no duplicar si el bot sigue corriendo.
-
-const _confirmacionesEnviadas = new Set();
-const _avisosFinalEnviados    = new Set();
+// El estado de envío se persiste en DB (confirmacion_enviada, aviso_2h_enviado)
+// para evitar reenvíos si el proceso reinicia.
 
 async function enviarConfirmaciones(sock) {
   try {
     const reservas = await db.obtenerReservasProximas(24, 1);
     for (const reserva of reservas) {
-      if (_confirmacionesEnviadas.has(reserva.id)) continue;
-
+      const _cfg = configManager.get();
       await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
-        text:
-          `🍽️ *¡Recordatorio de reserva!*\n\n` +
-          `Hola ${reserva.nombre}! Te recordamos tu reserva en *${configManager.get().nombre}*:\n\n` +
-          `  • 📅 Fecha: ${reserva.fecha}\n` +
-          `  • 🕐 Hora: ${reserva.hora}\n` +
-          `  • 👥 Personas: ${reserva.personas}\n\n` +
-          `¿Confirmás tu asistencia? Respondé *SÍ* para confirmar o *NO* para cancelar. 😊`,
+        text: t(_cfg.idioma || 'es', 'recordatorio24h', reserva.nombre, {
+          restaurante: _cfg.nombre,
+          fecha: reserva.fecha,
+          hora: reserva.hora,
+          personas: reserva.personas,
+        }),
       });
-
-      _confirmacionesEnviadas.add(reserva.id);
       await db.marcarConfirmacionEnviada(reserva.id).catch(() => {});
       logger.info(`📅 Confirmación enviada a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
     }
@@ -140,20 +137,43 @@ async function enviarAvisosFinal(sock) {
   try {
     const reservas = await db.obtenerReservasProximas(2, 0.5, { soloConConfirmacion: true });
     for (const reserva of reservas) {
-      if (_avisosFinalEnviados.has(reserva.id)) continue;
-
+      const _cfg = configManager.get();
       await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
-        text:
-          `⏰ *¡Tu reserva es en 2 horas!*\n\n` +
-          `Hola ${reserva.nombre}! Tu mesa en *${configManager.get().nombre}* te espera a las *${reserva.hora}*.\n\n` +
-          `Si no podés venir, escribinos ahora para liberarla. ¡Hasta pronto! 😊`,
+        text: t(_cfg.idioma || 'es', 'aviso2h', {
+          restaurante: _cfg.nombre,
+          nombre: reserva.nombre,
+          hora: reserva.hora,
+        }),
       });
-
-      _avisosFinalEnviados.add(reserva.id);
+      await db.marcarAviso2hEnviado(reserva.id).catch(() => {});
       logger.info(`⏰ Aviso final enviado a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
     }
   } catch (error) {
     logger.error(`❌ Error en scheduler de avisos finales: ${error.message}`);
+  }
+}
+
+async function enviarEncuestas(sock) {
+  try {
+    const cfg = configManager.get();
+    const reservas = await db.obtenerReservasParaEncuesta();
+    for (const reserva of reservas) {
+      const idioma = cfg.idioma || 'es';
+      await sock.sendMessage(`${reserva.telefono}@s.whatsapp.net`, {
+        text: t(idioma, 'encuesta', reserva.nombre, cfg.nombre),
+      });
+      await db.marcarEncuestaEnviada(reserva.id).catch(() => {});
+      // Marcar sesión en estado encuesta para capturar la respuesta
+      try {
+        const sesion = await sessionManager.obtenerOCrearSesion(reserva.telefono);
+        sesion.estado = 'encuesta';
+        sesion.encuestaReservaId = reserva.id;
+        await sessionManager.actualizarSesion(reserva.telefono, sesion);
+      } catch { /* no crítico */ }
+      logger.info(`⭐ Encuesta enviada a ${maskTel(reserva.telefono)} — reserva ${reserva.id}`);
+    }
+  } catch (error) {
+    logger.error(`❌ Error en scheduler de encuestas: ${error.message}`);
   }
 }
 
@@ -247,6 +267,15 @@ async function iniciarBot() {
     }
   });
 
+  bot.setEnviadorInteractivo(async (telefono, payload) => {
+    const jid = telefono.includes('@') ? telefono : `${telefono}@s.whatsapp.net`;
+    try {
+      await sock.sendMessage(jid, payload);
+    } catch (err) {
+      logger.error(`❌ Error enviando mensaje interactivo a ${telefono}: ${err.message}`);
+    }
+  });
+
   // 5. Registrar hook de socket.io para cambios de reserva
   bot.onReservaChange((tipo, datos) => io.emit(`reserva:${tipo}`, datos));
 
@@ -273,6 +302,7 @@ async function iniciarBot() {
         sock._schedulersActivos = true;
         setInterval(() => enviarConfirmaciones(sock), 15 * 60_000);
         setInterval(() => enviarAvisosFinal(sock),    15 * 60_000);
+        setInterval(() => enviarEncuestas(sock),      15 * 60_000);
         logger.info('⏰ Schedulers de recordatorios activos (cada 15 min)');
       }
     }
@@ -319,14 +349,24 @@ async function iniciarBot() {
 
       const telefono = msg.key.remoteJid.replace('@s.whatsapp.net', '');
 
-      // Extraer texto del mensaje (soporta texto plano y texto extendido)
+      // Extraer texto del mensaje (soporta texto plano, texto extendido y respuestas de lista)
       const contenido = (
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
+        msg.message?.listResponseMessage?.title ||
         ''
       ).trim();
 
       if (!contenido) continue;
+
+      // Staff: comandos directos sin pasar por el bot de reservas
+      if (configManager.get().telefonosStaff?.includes(telefono)) {
+        logger.info(`👷 [${maskTel(telefono)}] comando staff: ${contenido.substring(0, 40)}`);
+        procesarComandoStaff(sock, telefono, contenido).catch(err =>
+          logger.error(`❌ Error en comando staff: ${err.message}`)
+        );
+        continue;
+      }
 
       // Rate limiting: ignorar si el usuario excedió el límite de mensajes
       if (estaLimitado(telefono)) {

@@ -302,6 +302,40 @@ function crearAdminRouter(io = null, cfgManager = null) {
     }
   });
 
+  // ─── FECHAS BLOQUEADAS ────────────────────────────────────
+
+  // GET /admin/api/fechas-bloqueadas
+  router.get('/api/fechas-bloqueadas', async (req, res) => {
+    try {
+      res.json(await db.listarFechasBloqueadas());
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /admin/api/fechas-bloqueadas
+  router.post('/api/fechas-bloqueadas', async (req, res) => {
+    try {
+      const { fecha, motivo } = req.body || {};
+      if (!fecha?.trim()) return res.status(400).json({ error: 'fecha requerida (DD/MM/YYYY)' });
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(fecha.trim()))
+        return res.status(400).json({ error: 'Formato inválido. Usar DD/MM/YYYY' });
+      res.status(201).json(await db.bloquearFecha(fecha.trim(), motivo?.trim() || null));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /admin/api/fechas-bloqueadas/:id
+  router.delete('/api/fechas-bloqueadas/:id', async (req, res) => {
+    try {
+      await db.desbloquearFecha(parseInt(req.params.id, 10));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── IMPRESIÓN DEL DÍA ────────────────────────────────────
 
   // GET /admin/api/print?fecha=DD/MM/YYYY — HTML listo para imprimir

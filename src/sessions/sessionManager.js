@@ -33,8 +33,11 @@ class SessionManager {
       estado: 'inicio',
       historialConversacion: [],
       reservaPendiente: { nombre: null, fecha: null, hora: null, personas: null },
+      modificacion: null,
+      listaEsperaDisponible: null,
       ultimaActividad: Date.now(),
       modoHumano: false,
+      encuestaReservaId: null,
     };
   }
 
@@ -57,28 +60,28 @@ class SessionManager {
     // Sesión nueva
     const sesion = this._nuevaSesion(telefono);
     this.sessions.set(telefono, sesion);
-    getDB().guardarSesion(telefono, sesion).catch(() => {});
+    getDB().guardarSesion(telefono, sesion).catch(e => console.error('⚠️ guardarSesion nueva sesión:', e.message));
     return sesion;
   }
 
-  actualizarSesion(telefono, datos) {
+  async actualizarSesion(telefono, datos) {
     const sesion = this.sessions.get(telefono);
     if (!sesion) return null;
     Object.assign(sesion, datos, { ultimaActividad: Date.now() });
-    getDB().guardarSesion(telefono, sesion).catch(() => {});
+    try { await getDB().guardarSesion(telefono, sesion); } catch { /* L1 siempre actualizado */ }
     return sesion;
   }
 
   eliminarSesion(telefono) {
     this.sessions.delete(telefono);
-    getDB().eliminarSesionDB(telefono).catch(() => {});
+    getDB().eliminarSesionDB(telefono).catch(e => console.error('⚠️ eliminarSesionDB:', e.message));
   }
 
   // Usado por el simulador /test
   crearSesion(telefono) {
     const sesion = this._nuevaSesion(telefono);
     this.sessions.set(telefono, sesion);
-    getDB().guardarSesion(telefono, sesion).catch(() => {});
+    getDB().guardarSesion(telefono, sesion).catch(e => console.error('⚠️ guardarSesion crearSesion:', e.message));
     return sesion;
   }
 
@@ -89,7 +92,7 @@ class SessionManager {
         this.sessions.delete(telefono);
       }
     }
-    getDB().limpiarSesionesExpiradas().catch(() => {});
+    getDB().limpiarSesionesExpiradas().catch(e => console.error('⚠️ limpiarSesionesExpiradas:', e.message));
   }
 }
 

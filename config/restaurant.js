@@ -5,6 +5,7 @@
 
 module.exports = {
   // --- DATOS BÁSICOS ---
+  idioma: 'es',   // 'es' | 'en' | 'pt'
   nombre: 'La Parrilla de Don José',
   telefono: '+54 11 1234-5678',
   direccion: 'Av. Corrientes 1234, CABA, Buenos Aires',
@@ -12,6 +13,10 @@ module.exports = {
   // Número de WhatsApp del dueño para recibir notificaciones (sin + ni espacios, ej: '5491112345678')
   // null = deshabilitado
   telefonoAdmin: null,
+
+  // Números de WhatsApp del staff que pueden enviar comandos al bot (sin + ni espacios)
+  // Ej: ['5491112345678']. Estos números NO reciben el flujo normal de reservas.
+  telefonosStaff: [],
 
   // --- HORARIOS DE ATENCIÓN ---
   // null = día cerrado

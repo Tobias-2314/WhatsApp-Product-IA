@@ -6,6 +6,7 @@ import MesasPanel from './MesasPanel.vue'
 import OcupacionPanel from './OcupacionPanel.vue'
 import AnalyticsPanel from './AnalyticsPanel.vue'
 import ConfigPanel from './ConfigPanel.vue'
+import FechasBloqueadasPanel from './FechasBloqueadasPanel.vue'
 import { getStats, getReservas, exportarCSV, clearToken, socket, abrirImpresion, getConfig } from '../api.js'
 
 const tabActiva = ref('reservas')
@@ -150,6 +151,9 @@ onUnmounted(() => {
         <button class="tab" :class="{ active: tabActiva === 'mesas' }"          @click="tabActiva = 'mesas'">
           <span class="tab-icon">🪑</span> Mesas
         </button>
+        <button class="tab" :class="{ active: tabActiva === 'fechas' }"          @click="tabActiva = 'fechas'">
+          <span class="tab-icon">🔒</span> Fechas
+        </button>
         <button class="tab" :class="{ active: tabActiva === 'configuracion' }"  @click="tabActiva = 'configuracion'">
           <span class="tab-icon">⚙️</span> Config
         </button>
@@ -233,6 +237,9 @@ onUnmounted(() => {
 
       <!-- ── PESTAÑA MESAS ── -->
       <MesasPanel v-else-if="tabActiva === 'mesas'" />
+
+      <!-- ── PESTAÑA FECHAS BLOQUEADAS ── -->
+      <FechasBloqueadasPanel v-else-if="tabActiva === 'fechas'" />
 
       <!-- ── PESTAÑA CONFIG ── -->
       <ConfigPanel v-else-if="tabActiva === 'configuracion'" @updated="onConfigUpdated" />

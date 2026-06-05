@@ -3,12 +3,15 @@
 // ============================================================
 
 const { Pool } = require('pg');
-const restaurante = require('../config/restaurant');
+const restaurante    = require('../config/restaurant');
+const configManager  = require('./configManager');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
 });
+
+const RESTAURANTE_ID = parseInt(process.env.RESTAURANTE_ID || '1', 10);
 
 class DBManager {
   async inicializar() {
@@ -43,6 +46,7 @@ class DBManager {
       ALTER TABLE reservas ADD COLUMN IF NOT EXISTS duracion_minutos     INTEGER NOT NULL DEFAULT 90;
       ALTER TABLE reservas ADD COLUMN IF NOT EXISTS hora_fin             VARCHAR(5);
       ALTER TABLE reservas ADD COLUMN IF NOT EXISTS confirmacion_enviada BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE reservas ADD COLUMN IF NOT EXISTS aviso_2h_enviado     BOOLEAN NOT NULL DEFAULT false;
     `);
 
     // Sesiones persistentes (L2 para sessionManager)
@@ -122,6 +126,36 @@ class DBManager {
       ALTER TABLE mesas ADD COLUMN IF NOT EXISTS y_pos INTEGER DEFAULT NULL;
     `);
 
+    // Multi-tenant: aislamiento por restaurante
+    await pool.query(`
+      ALTER TABLE reservas     ADD COLUMN IF NOT EXISTS restaurante_id INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE mesas        ADD COLUMN IF NOT EXISTS restaurante_id INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE lista_espera ADD COLUMN IF NOT EXISTS restaurante_id INTEGER NOT NULL DEFAULT 1;
+    `);
+
+    // Encuestas post-visita y fechas bloqueadas
+    await pool.query(`
+      ALTER TABLE reservas ADD COLUMN IF NOT EXISTS encuesta_enviada BOOLEAN NOT NULL DEFAULT false;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS resenas (
+        id             SERIAL       PRIMARY KEY,
+        reserva_id     VARCHAR(20)  REFERENCES reservas(id),
+        telefono       VARCHAR(50)  NOT NULL,
+        puntuacion     INTEGER      CHECK (puntuacion BETWEEN 1 AND 5),
+        restaurante_id INTEGER      NOT NULL DEFAULT 1,
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fechas_bloqueadas (
+        id             SERIAL       PRIMARY KEY,
+        fecha          VARCHAR(10)  NOT NULL,
+        motivo         VARCHAR(200),
+        restaurante_id INTEGER      NOT NULL DEFAULT 1
+      );
+    `);
+
     // Índices
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_reservas_telefono   ON reservas(telefono);
@@ -130,13 +164,20 @@ class DBManager {
       CREATE INDEX IF NOT EXISTS idx_reservas_mesa_fecha ON reservas(mesa_id, fecha);
       CREATE INDEX IF NOT EXISTS idx_lista_espera_fh     ON lista_espera(fecha, hora, estado);
       CREATE INDEX IF NOT EXISTS idx_clientes            ON clientes(telefono);
+      CREATE INDEX IF NOT EXISTS idx_reservas_rid_fecha  ON reservas(restaurante_id, fecha);
+      CREATE INDEX IF NOT EXISTS idx_mesas_rid           ON mesas(restaurante_id);
+      CREATE INDEX IF NOT EXISTS idx_lista_espera_rid    ON lista_espera(restaurante_id);
+      CREATE INDEX IF NOT EXISTS idx_fechas_bloqueadas_rid ON fechas_bloqueadas(restaurante_id, fecha);
     `);
 
     // Seed de mesas si la tabla está vacía
-    const { rows: cnt } = await pool.query(`SELECT COUNT(*) AS n FROM mesas`);
+    const { rows: cnt } = await pool.query(`SELECT COUNT(*) AS n FROM mesas WHERE restaurante_id = ${RESTAURANTE_ID}`);
     if (parseInt(cnt[0].n, 10) === 0 && restaurante.mesasIniciales?.length) {
       for (const m of restaurante.mesasIniciales) {
-        await pool.query(`INSERT INTO mesas (nombre, capacidad) VALUES ($1, $2)`, [m.nombre, m.capacidad]);
+        await pool.query(
+          `INSERT INTO mesas (nombre, capacidad, restaurante_id) VALUES ($1, $2, ${RESTAURANTE_ID})`,
+          [m.nombre, m.capacidad]
+        );
       }
     }
   }
@@ -194,8 +235,8 @@ class DBManager {
 
   async agregarListaEspera({ telefono, nombre, fecha, hora, personas }) {
     const { rows } = await pool.query(
-      `INSERT INTO lista_espera (telefono, nombre, fecha, hora, personas)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      `INSERT INTO lista_espera (telefono, nombre, fecha, hora, personas, restaurante_id)
+       VALUES ($1, $2, $3, $4, $5, ${RESTAURANTE_ID}) RETURNING *`,
       [telefono, nombre ?? null, fecha, hora, personas]
     );
     return rows[0];
@@ -204,7 +245,7 @@ class DBManager {
   async obtenerPrimeraListaEspera(fecha, hora, personas) {
     const { rows } = await pool.query(
       `SELECT * FROM lista_espera
-       WHERE fecha = $1 AND hora = $2 AND personas <= $3 AND estado = 'pendiente'
+       WHERE fecha = $1 AND hora = $2 AND personas <= $3 AND estado = 'pendiente' AND restaurante_id = ${RESTAURANTE_ID}
        ORDER BY created_at ASC LIMIT 1`,
       [fecha, hora, personas]
     );
@@ -219,7 +260,7 @@ class DBManager {
 
   async obtenerListaEsperaPorTelefono(telefono) {
     const { rows } = await pool.query(
-      `SELECT * FROM lista_espera WHERE telefono = $1 AND estado = 'pendiente' ORDER BY created_at ASC`,
+      `SELECT * FROM lista_espera WHERE telefono = $1 AND estado = 'pendiente' AND restaurante_id = ${RESTAURANTE_ID} ORDER BY created_at ASC`,
       [telefono]
     );
     return rows;
@@ -240,11 +281,60 @@ class DBManager {
     const ids      = mesasIds?.length ? mesasIds : null;
 
     await pool.query(
-      `INSERT INTO reservas (id, telefono, nombre, fecha, hora, personas, estado, mesa_id, mesas_ids, duracion_minutos, hora_fin)
-       VALUES ($1, $2, $3, $4, $5, $6, 'confirmada', $7, $8, $9, $10)`,
+      `INSERT INTO reservas (id, telefono, nombre, fecha, hora, personas, estado, mesa_id, mesas_ids, duracion_minutos, hora_fin, restaurante_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'confirmada', $7, $8, $9, $10, ${RESTAURANTE_ID})`,
       [id, telefono, nombre, fecha, hora, personas, ids?.[0] ?? null, ids, duracion, horaFin]
     );
     return { id, telefono, nombre, fecha, hora, hora_fin: horaFin, personas, estado: 'confirmada', mesas_ids: ids };
+  }
+
+  async guardarReservaAtomico({ telefono, nombre, fecha, hora, personas }) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const horaFin = this._calcularHoraFin(hora);
+
+      // Bloquea todas las mesas activas para evitar asignación concurrente
+      const { rows: todasMesas } = await client.query(
+        `SELECT id, nombre, capacidad FROM mesas WHERE activa = true AND restaurante_id = ${RESTAURANTE_ID} ORDER BY capacidad ASC, id ASC FOR UPDATE`
+      );
+
+      const [{ rows: conflictos }, { rows: combRows }] = await Promise.all([
+        client.query(
+          `SELECT mesa_id, mesas_ids FROM reservas
+           WHERE fecha = $1 AND estado = 'confirmada' AND hora < $2 AND hora_fin > $3 AND restaurante_id = ${RESTAURANTE_ID}`,
+          [fecha, horaFin, hora]
+        ),
+        client.query(`SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`),
+      ]);
+
+      const ocupadas = _ocupadasDesdeConflictos(conflictos);
+      const libres   = todasMesas.filter(m => !ocupadas.has(m.id));
+      const combSet  = new Set(combRows.map(r => `${r.mesa_id_1}-${r.mesa_id_2}`));
+      const mesa     = _asignarDesdeLibres(libres, personas, combSet);
+
+      if (!mesa) { await client.query('ROLLBACK'); return null; }
+
+      const id       = this._generarId();
+      const duracion = restaurante.duracionReservaMinutos;
+
+      await client.query(
+        `INSERT INTO reservas (id, telefono, nombre, fecha, hora, personas, estado, mesa_id, mesas_ids, duracion_minutos, hora_fin, restaurante_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'confirmada', $7, $8, $9, $10, ${RESTAURANTE_ID})`,
+        [id, telefono, nombre, fecha, hora, personas, mesa.ids[0], mesa.ids, duracion, horaFin]
+      );
+
+      await client.query('COMMIT');
+      return {
+        reserva: { id, telefono, nombre, fecha, hora, hora_fin: horaFin, personas, estado: 'confirmada', mesas_ids: mesa.ids },
+        mesa,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async cancelarReserva(telefono, idReserva = null) {
@@ -252,15 +342,15 @@ class DBManager {
     if (idReserva) {
       ({ rows } = await pool.query(
         `UPDATE reservas SET estado = 'cancelada'
-         WHERE telefono = $1 AND id = $2 AND estado = 'confirmada' RETURNING *`,
+         WHERE telefono = $1 AND id = $2 AND estado = 'confirmada' AND restaurante_id = ${RESTAURANTE_ID} RETURNING *`,
         [telefono, idReserva]
       ));
     } else {
       ({ rows } = await pool.query(
         `UPDATE reservas SET estado = 'cancelada'
          WHERE id = (
-           SELECT id FROM reservas WHERE telefono = $1 AND estado = 'confirmada'
-           ORDER BY timestamp ASC LIMIT 1
+           SELECT id FROM reservas WHERE telefono = $1 AND estado = 'confirmada' AND restaurante_id = ${RESTAURANTE_ID}
+           ORDER BY fecha ASC, hora ASC LIMIT 1
          ) RETURNING *`,
         [telefono]
       ));
@@ -270,45 +360,117 @@ class DBManager {
   }
 
   async modificarReserva(telefono, campos) {
-    const { rows: actual } = await pool.query(
-      `SELECT * FROM reservas WHERE telefono = $1 AND estado = 'confirmada' ORDER BY timestamp ASC LIMIT 1`,
-      [telefono]
-    );
-    if (!actual.length) return null;
-    const r = actual[0];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    const nuevaFecha     = campos.fecha    ?? r.fecha;
-    const nuevaHora      = campos.hora     ?? r.hora;
-    const nuevasPersonas = campos.personas ?? parseInt(r.personas, 10);
+      const { rows: actual } = await client.query(
+        `SELECT * FROM reservas WHERE telefono = $1 AND estado = 'confirmada' AND restaurante_id = ${RESTAURANTE_ID} ORDER BY timestamp ASC LIMIT 1 FOR UPDATE`,
+        [telefono]
+      );
+      if (!actual.length) { await client.query('ROLLBACK'); return null; }
+      const r = actual[0];
 
-    const cambiaSlot = nuevaFecha !== r.fecha || nuevaHora !== r.hora || nuevasPersonas !== parseInt(r.personas, 10);
+      const nuevaFecha     = campos.fecha    ?? r.fecha;
+      const nuevaHora      = campos.hora     ?? r.hora;
+      const nuevasPersonas = campos.personas ?? parseInt(r.personas, 10);
+      const cambiaSlot     = nuevaFecha !== r.fecha || nuevaHora !== r.hora || nuevasPersonas !== parseInt(r.personas, 10);
 
-    let nuevaMesaId    = r.mesa_id   ? parseInt(r.mesa_id, 10) : null;
-    let nuevasMesasIds = r.mesas_ids ?? null;
-    let nuevaHoraFin   = r.hora_fin  || this._calcularHoraFin(nuevaHora);
+      let nuevaMesaId    = r.mesa_id   ? parseInt(r.mesa_id, 10) : null;
+      let nuevasMesasIds = r.mesas_ids ?? null;
+      let nuevaHoraFin   = r.hora_fin  || this._calcularHoraFin(nuevaHora);
 
-    if (cambiaSlot) {
-      const mesa = await this._asignarMesaExcluyendo(nuevaFecha, nuevaHora, nuevasPersonas, r.id);
-      if (!mesa) return { error: 'no_disponibilidad' };
-      nuevaMesaId    = mesa.ids[0];
-      nuevasMesasIds = mesa.ids;
-      nuevaHoraFin   = this._calcularHoraFin(nuevaHora);
+      if (cambiaSlot) {
+        const horaFin = this._calcularHoraFin(nuevaHora);
+
+        const { rows: todasMesas } = await client.query(
+          `SELECT id, nombre, capacidad FROM mesas WHERE activa = true AND restaurante_id = ${RESTAURANTE_ID} ORDER BY capacidad ASC, id ASC FOR UPDATE`
+        );
+        const [{ rows: conflictos }, { rows: combRows }] = await Promise.all([
+          client.query(
+            `SELECT mesa_id, mesas_ids FROM reservas
+             WHERE fecha = $1 AND estado = 'confirmada' AND hora < $2 AND hora_fin > $3 AND id != $4 AND restaurante_id = ${RESTAURANTE_ID}`,
+            [nuevaFecha, horaFin, nuevaHora, r.id]
+          ),
+          client.query(`SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`),
+        ]);
+
+        const ocupadas = _ocupadasDesdeConflictos(conflictos);
+        const libres   = todasMesas.filter(m => !ocupadas.has(m.id));
+        const combSet  = new Set(combRows.map(c => `${c.mesa_id_1}-${c.mesa_id_2}`));
+        const mesa     = _asignarDesdeLibres(libres, nuevasPersonas, combSet);
+
+        if (!mesa) { await client.query('ROLLBACK'); return { error: 'no_disponibilidad' }; }
+
+        nuevaMesaId    = mesa.ids[0];
+        nuevasMesasIds = mesa.ids;
+        nuevaHoraFin   = horaFin;
+      }
+
+      await client.query(
+        `UPDATE reservas SET fecha = $1, hora = $2, personas = $3, mesa_id = $4, mesas_ids = $5, hora_fin = $6 WHERE id = $7`,
+        [nuevaFecha, nuevaHora, nuevasPersonas, nuevaMesaId, nuevasMesasIds, nuevaHoraFin, r.id]
+      );
+
+      await client.query('COMMIT');
+      return {
+        id: r.id, telefono: r.telefono, nombre: r.nombre,
+        fecha: nuevaFecha, hora: nuevaHora, hora_fin: nuevaHoraFin, personas: nuevasPersonas,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-
-    await pool.query(
-      `UPDATE reservas SET fecha = $1, hora = $2, personas = $3, mesa_id = $4, mesas_ids = $5, hora_fin = $6 WHERE id = $7`,
-      [nuevaFecha, nuevaHora, nuevasPersonas, nuevaMesaId, nuevasMesasIds, nuevaHoraFin, r.id]
-    );
-
-    return {
-      id: r.id, telefono: r.telefono, nombre: r.nombre,
-      fecha: nuevaFecha, hora: nuevaHora, hora_fin: nuevaHoraFin, personas: nuevasPersonas,
-    };
   }
 
   async marcarConfirmacionEnviada(id) {
     await pool.query(
       `UPDATE reservas SET confirmacion_enviada = true WHERE id = $1`, [id]
+    );
+  }
+
+  async marcarAviso2hEnviado(id) {
+    await pool.query(
+      `UPDATE reservas SET aviso_2h_enviado = true WHERE id = $1`, [id]
+    );
+  }
+
+  async marcarEncuestaEnviada(id) {
+    await pool.query(`UPDATE reservas SET encuesta_enviada = true WHERE id = $1`, [id]);
+  }
+
+  async obtenerReservasParaEncuesta() {
+    const ahoraAR = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+    const fechas = new Set();
+    for (let h = 19; h <= 29; h++) {
+      const d = new Date(ahoraAR.getTime() - h * 3_600_000);
+      fechas.add(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`);
+    }
+    const fechasArr = [...fechas];
+    const phs = fechasArr.map((_, i) => `$${i + 1}`).join(', ');
+    const { rows } = await pool.query(
+      `SELECT * FROM reservas WHERE estado = 'confirmada' AND encuesta_enviada = false
+       AND restaurante_id = ${RESTAURANTE_ID} AND fecha IN (${phs})`,
+      fechasArr
+    );
+    const ahora = new Date();
+    return rows.filter(r => {
+      const [dia, mes, anio] = (r.fecha || '').split('/').map(Number);
+      const [hh, mm]         = (r.hora  || '').split(':').map(Number);
+      if ([dia, mes, anio, hh, mm].some(isNaN)) return false;
+      const fechaHora = new Date(anio, mes - 1, dia, hh, mm);
+      const dif = (ahora - fechaHora) / 3_600_000;
+      return dif >= 20 && dif <= 28;
+    }).map(r => this._mapear(r));
+  }
+
+  async guardarResena({ reservaId, telefono, puntuacion }) {
+    await pool.query(
+      `INSERT INTO resenas (reserva_id, telefono, puntuacion, restaurante_id)
+       VALUES ($1, $2, $3, ${RESTAURANTE_ID})`,
+      [reservaId, telefono, puntuacion]
     );
   }
 
@@ -322,7 +484,7 @@ class DBManager {
 
   async contarNoShowsPorTelefono(telefono) {
     const { rows } = await pool.query(
-      `SELECT COUNT(*) AS total FROM reservas WHERE telefono = $1 AND estado = 'no_show'`, [telefono]
+      `SELECT COUNT(*) AS total FROM reservas WHERE telefono = $1 AND estado = 'no_show' AND restaurante_id = ${RESTAURANTE_ID}`, [telefono]
     );
     return parseInt(rows[0].total, 10);
   }
@@ -342,10 +504,10 @@ class DBManager {
       pool.query(
         `SELECT r.mesa_id, r.mesas_ids FROM reservas r
          WHERE r.fecha = $1 AND r.estado = 'confirmada'
-           AND r.hora < $2 AND r.hora_fin > $3 ${conflCond}`,
+           AND r.hora < $2 AND r.hora_fin > $3 AND r.restaurante_id = ${RESTAURANTE_ID} ${conflCond}`,
         conflParams
       ),
-      pool.query(`SELECT id, nombre, capacidad FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`),
+      pool.query(`SELECT id, nombre, capacidad FROM mesas WHERE activa = true AND restaurante_id = ${RESTAURANTE_ID} ORDER BY capacidad ASC, id ASC`),
       pool.query(`SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`),
     ]);
 
@@ -362,10 +524,10 @@ class DBManager {
       pool.query(
         `SELECT r.mesa_id, r.mesas_ids, r.hora, r.hora_fin FROM reservas r
          WHERE r.fecha = $1 AND r.estado = 'confirmada'
-           AND (r.mesa_id IS NOT NULL OR r.mesas_ids IS NOT NULL)`,
+           AND (r.mesa_id IS NOT NULL OR r.mesas_ids IS NOT NULL) AND r.restaurante_id = ${RESTAURANTE_ID}`,
         [fecha]
       ),
-      pool.query(`SELECT id, nombre, capacidad FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`),
+      pool.query(`SELECT id, nombre, capacidad FROM mesas WHERE activa = true AND restaurante_id = ${RESTAURANTE_ID} ORDER BY capacidad ASC, id ASC`),
       pool.query(`SELECT mesa_id_1, mesa_id_2 FROM combinaciones_mesas`),
     ]);
 
@@ -387,7 +549,7 @@ class DBManager {
 
   async obtenerReservasPorFecha(fecha) {
     const { rows } = await pool.query(
-      `SELECT * FROM reservas WHERE fecha = $1 ORDER BY hora ASC`, [fecha]
+      `SELECT * FROM reservas WHERE fecha = $1 AND restaurante_id = ${RESTAURANTE_ID} ORDER BY hora ASC`, [fecha]
     );
     return rows.map(r => this._mapear(r));
   }
@@ -400,7 +562,7 @@ class DBManager {
            (SELECT m.nombre FROM mesas m WHERE m.id = r.mesa_id)
          ) AS mesa_nombre
        FROM reservas r
-       WHERE r.telefono = $1 AND r.estado = 'confirmada' ORDER BY r.timestamp ASC`,
+       WHERE r.telefono = $1 AND r.estado = 'confirmada' AND r.restaurante_id = ${RESTAURANTE_ID} ORDER BY r.timestamp ASC`,
       [telefono]
     );
     return rows.map(r => ({ ...this._mapear(r), mesa_nombre: r.mesa_nombre || null, timestamp: this._formatTs(r.timestamp) }));
@@ -408,7 +570,7 @@ class DBManager {
 
   async obtenerReservaActiva(telefono) {
     const { rows } = await pool.query(
-      `SELECT * FROM reservas WHERE telefono = $1 AND estado = 'confirmada' ORDER BY timestamp ASC LIMIT 1`,
+      `SELECT * FROM reservas WHERE telefono = $1 AND estado = 'confirmada' AND restaurante_id = ${RESTAURANTE_ID} ORDER BY fecha ASC, hora ASC LIMIT 1`,
       [telefono]
     );
     if (!rows.length) return null;
@@ -417,11 +579,24 @@ class DBManager {
 
   async obtenerReservasProximas(horasAntes = 24, margenHoras = 0.5, { soloConConfirmacion = false } = {}) {
     const condicion = soloConConfirmacion
-      ? `AND confirmacion_enviada = true`
-      : '';
+      ? `AND confirmacion_enviada = true AND aviso_2h_enviado = false`
+      : `AND confirmacion_enviada = false`;
+
+    // Pre-filtrar por fechas candidatas para evitar traer toda la tabla
+    const ahoraAR = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+    const fechas  = new Set();
+    for (let h = Math.floor(horasAntes - margenHoras - 1); h <= Math.ceil(horasAntes + margenHoras + 1); h++) {
+      const d = new Date(ahoraAR.getTime() + h * 3_600_000);
+      fechas.add(`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`);
+    }
+    const fechasArr    = [...fechas];
+    const placeholders = fechasArr.map((_, i) => `$${i + 1}`).join(', ');
+
     const { rows } = await pool.query(
-      `SELECT * FROM reservas WHERE estado = 'confirmada' ${condicion}`
+      `SELECT * FROM reservas WHERE estado = 'confirmada' ${condicion} AND fecha IN (${placeholders}) AND restaurante_id = ${RESTAURANTE_ID}`,
+      fechasArr
     );
+
     const ahora = new Date();
     return rows.filter(r => {
       const [dia, mes, anio] = (r.fecha || '').split('/').map(Number);
@@ -437,13 +612,13 @@ class DBManager {
 
   async obtenerOcupacionDia(fecha) {
     const { rows: mesasRows } = await pool.query(
-      `SELECT id, nombre, capacidad, x_pos, y_pos FROM mesas WHERE activa = true ORDER BY capacidad ASC, id ASC`
+      `SELECT id, nombre, capacidad, x_pos, y_pos FROM mesas WHERE activa = true AND restaurante_id = ${RESTAURANTE_ID} ORDER BY capacidad ASC, id ASC`
     );
     const { rows: reservas } = await pool.query(
       `SELECT r.id, r.mesa_id, r.mesas_ids, r.hora, r.hora_fin, r.duracion_minutos, r.nombre, r.personas
        FROM reservas r
        WHERE r.fecha = $1 AND r.estado = 'confirmada'
-         AND (r.mesa_id IS NOT NULL OR r.mesas_ids IS NOT NULL)`,
+         AND (r.mesa_id IS NOT NULL OR r.mesas_ids IS NOT NULL) AND r.restaurante_id = ${RESTAURANTE_ID}`,
       [fecha]
     );
 
@@ -482,19 +657,14 @@ class DBManager {
   // ─── ANALYTICS ────────────────────────────────────────────
 
   async obtenerAnalytics({ desde, hasta }) {
-    const { rows } = await pool.query(
+    const { rows: enRango } = await pool.query(
       `SELECT fecha, hora, estado, personas FROM reservas
-       WHERE estado IN ('confirmada', 'cancelada', 'no_show')`
+       WHERE estado IN ('confirmada', 'cancelada', 'no_show')
+         AND TO_DATE(fecha, 'DD/MM/YYYY') >= TO_DATE($1, 'DD/MM/YYYY')
+         AND TO_DATE(fecha, 'DD/MM/YYYY') <= TO_DATE($2, 'DD/MM/YYYY')
+         AND restaurante_id = ${RESTAURANTE_ID}`,
+      [desde, hasta]
     );
-
-    const desdeDate = this._fechaADate(desde);
-    const hastaDate = this._fechaADate(hasta);
-    hastaDate.setHours(23, 59, 59);
-
-    const enRango = rows.filter(r => {
-      const d = this._fechaADate(r.fecha);
-      return d >= desdeDate && d <= hastaDate;
-    });
 
     // reservasPorDia
     const porDia = {};
@@ -537,7 +707,7 @@ class DBManager {
   // ─── ADMIN — RESERVAS ─────────────────────────────────────
 
   async obtenerReservasFiltradas({ fecha, estado, search, desde, hasta } = {}) {
-    const conditions = [];
+    const conditions = [`r.restaurante_id = ${RESTAURANTE_ID}`];
     const params = [];
     let i = 1;
 
@@ -554,6 +724,14 @@ class DBManager {
       params.push(`%${search}%`, `%${search}%`);
       i += 2;
     }
+    if (desde) {
+      conditions.push(`TO_DATE(r.fecha, 'DD/MM/YYYY') >= TO_DATE($${i++}, 'DD/MM/YYYY')`);
+      params.push(desde);
+    }
+    if (hasta) {
+      conditions.push(`TO_DATE(r.fecha, 'DD/MM/YYYY') <= TO_DATE($${i++}, 'DD/MM/YYYY')`);
+      params.push(hasta);
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const { rows } = await pool.query(
@@ -567,20 +745,7 @@ class DBManager {
       params
     );
 
-    let result = rows.map(r => ({ ...this._mapear(r), mesa_nombre: r.mesa_nombre || null, timestamp: this._formatTs(r.timestamp) }));
-
-    // Filtro por rango de fechas en JS (formato DD/MM/YYYY)
-    if (desde) {
-      const d = this._fechaADate(desde);
-      result = result.filter(r => this._fechaADate(r.fecha) >= d);
-    }
-    if (hasta) {
-      const h = this._fechaADate(hasta);
-      h.setHours(23, 59, 59);
-      result = result.filter(r => this._fechaADate(r.fecha) <= h);
-    }
-
-    return result;
+    return rows.map(r => ({ ...this._mapear(r), mesa_nombre: r.mesa_nombre || null, timestamp: this._formatTs(r.timestamp) }));
   }
 
   async cancelarReservaPorId(id) {
@@ -594,7 +759,7 @@ class DBManager {
   async obtenerStatsHoy(fecha) {
     const { rows } = await pool.query(
       `SELECT estado, COUNT(*) AS total, COALESCE(SUM(personas), 0) AS personas
-       FROM reservas WHERE fecha = $1 GROUP BY estado`,
+       FROM reservas WHERE fecha = $1 AND restaurante_id = ${RESTAURANTE_ID} GROUP BY estado`,
       [fecha]
     );
     const confirmadas = rows.find(r => r.estado === 'confirmada');
@@ -612,7 +777,7 @@ class DBManager {
     if (!fechas.length) return 0;
     const placeholders = fechas.map((_, i) => `$${i + 1}`).join(', ');
     const { rows } = await pool.query(
-      `SELECT COUNT(*) AS total FROM reservas WHERE fecha IN (${placeholders}) AND estado = 'confirmada'`,
+      `SELECT COUNT(*) AS total FROM reservas WHERE fecha IN (${placeholders}) AND estado = 'confirmada' AND restaurante_id = ${RESTAURANTE_ID}`,
       fechas
     );
     return parseInt(rows[0].total, 10);
@@ -622,14 +787,14 @@ class DBManager {
 
   async obtenerMesas() {
     const { rows } = await pool.query(
-      `SELECT id, nombre, capacidad, activa, x_pos, y_pos FROM mesas ORDER BY capacidad ASC, id ASC`
+      `SELECT id, nombre, capacidad, activa, x_pos, y_pos FROM mesas WHERE restaurante_id = ${RESTAURANTE_ID} ORDER BY capacidad ASC, id ASC`
     );
     return rows.map(r => ({ id: r.id, nombre: r.nombre, capacidad: parseInt(r.capacidad, 10), activa: r.activa, x_pos: r.x_pos ?? null, y_pos: r.y_pos ?? null }));
   }
 
   async crearMesa({ nombre, capacidad }) {
     const { rows } = await pool.query(
-      `INSERT INTO mesas (nombre, capacidad) VALUES ($1, $2) RETURNING id, nombre, capacidad, activa, x_pos, y_pos`,
+      `INSERT INTO mesas (nombre, capacidad, restaurante_id) VALUES ($1, $2, ${RESTAURANTE_ID}) RETURNING id, nombre, capacidad, activa, x_pos, y_pos`,
       [nombre, parseInt(capacidad, 10)]
     );
     const r = rows[0];
@@ -699,6 +864,39 @@ class DBManager {
     return nuevo;
   }
 
+  // ─── FECHAS BLOQUEADAS ────────────────────────────────────
+
+  async bloquearFecha(fecha, motivo) {
+    const { rows } = await pool.query(
+      `INSERT INTO fechas_bloqueadas (fecha, motivo, restaurante_id)
+       VALUES ($1, $2, ${RESTAURANTE_ID}) RETURNING *`,
+      [fecha, motivo || null]
+    );
+    return rows[0];
+  }
+
+  async desbloquearFecha(id) {
+    await pool.query(
+      `DELETE FROM fechas_bloqueadas WHERE id = $1 AND restaurante_id = ${RESTAURANTE_ID}`,
+      [id]
+    );
+  }
+
+  async listarFechasBloqueadas() {
+    const { rows } = await pool.query(
+      `SELECT * FROM fechas_bloqueadas WHERE restaurante_id = ${RESTAURANTE_ID} ORDER BY fecha ASC`
+    );
+    return rows;
+  }
+
+  async esFechaBloqueada(fecha) {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM fechas_bloqueadas WHERE fecha = $1 AND restaurante_id = ${RESTAURANTE_ID} LIMIT 1`,
+      [fecha]
+    );
+    return rows.length > 0;
+  }
+
   // ─── RESTAURANTES (multi-tenant) ──────────────────────────
 
   async listarRestaurantes() {
@@ -730,8 +928,11 @@ class DBManager {
   // ─── PRIVADOS ─────────────────────────────────────────────
 
   _calcularHoraFin(hora) {
-    const [h, m] = hora.split(':').map(Number);
-    const total  = h * 60 + m + restaurante.duracionReservaMinutos + restaurante.tiempoLimpiezaMinutos;
+    const cfg      = configManager.get();
+    const duracion = cfg.duracionReservaMinutos ?? restaurante.duracionReservaMinutos;
+    const limpieza = cfg.tiempoLimpiezaMinutos  ?? restaurante.tiempoLimpiezaMinutos;
+    const [h, m]   = hora.split(':').map(Number);
+    const total    = h * 60 + m + duracion + limpieza;
     return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
   }
 
@@ -762,6 +963,7 @@ class DBManager {
       deposito_estado:      r.deposito_estado || null,
       deposito_monto:       r.deposito_monto  ? parseInt(r.deposito_monto) : null,
       deposito_mp_id:       r.deposito_mp_id  || null,
+      encuesta_enviada:     r.encuesta_enviada ?? false,
     };
   }
 

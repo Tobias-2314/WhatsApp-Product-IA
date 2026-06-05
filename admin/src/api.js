@@ -122,3 +122,15 @@ export function abrirImpresion(fecha) {
   const token = getToken()
   window.open(`/admin/api/print?fecha=${encodeURIComponent(fecha)}&token=${token}`)
 }
+
+export function getFechasBloqueadas() {
+  return request('/fechas-bloqueadas')
+}
+
+export function bloquearFecha(fecha, motivo) {
+  return request('/fechas-bloqueadas', { method: 'POST', body: JSON.stringify({ fecha, motivo }) })
+}
+
+export function desbloquearFecha(id) {
+  return request(`/fechas-bloqueadas/${id}`, { method: 'DELETE' })
+}
