@@ -258,38 +258,57 @@ onUnmounted(() => {
 
 .canvas {
   position: relative;
-  background: #f8fafc;
-  border: 1.5px solid #e5e7eb;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255,255,255,.03) 0px, rgba(255,255,255,.03) 1px,
+      transparent 1px, transparent 32px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,.03) 0px, rgba(255,255,255,.03) 1px,
+      transparent 1px, transparent 32px
+    ),
+    linear-gradient(135deg, #3d2b1f 0%, #5c3d2e 40%, #3d2b1f 100%);
+  border: 4px solid #2d1f14;
   border-radius: 10px;
+  box-shadow: inset 0 0 30px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.2);
   overflow: hidden;
-  background-image:
-    radial-gradient(circle, #e2e8f0 1px, transparent 1px);
-  background-size: 24px 24px;
 }
 
 .mesa-chip {
   position: absolute;
-  border-radius: 8px;
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 1px;
-  border: 2px solid transparent;
-  transition: box-shadow .15s, transform .1s;
+  transition: transform .12s, box-shadow .12s;
   cursor: default;
   user-select: none;
+  box-shadow: 0 4px 10px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.25);
 }
-.mesa-chip:hover { box-shadow: 0 4px 12px rgba(0,0,0,.15); transform: scale(1.04); z-index: 10; }
+.mesa-chip:hover { transform: translateY(-2px) scale(1.05); z-index: 10; box-shadow: 0 8px 18px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.25); }
 
-.mesa-chip.libre    { background: #d1fae5; border-color: #6ee7b7; }
-.mesa-chip.ocupada  { background: #dbeafe; border-color: #93c5fd; }
-.mesa-chip.limpieza { background: #fef3c7; border-color: #fcd34d; }
+.mesa-chip.libre {
+  background: linear-gradient(145deg, #d1fae5, #a7f3d0);
+  border: 2.5px solid #059669;
+}
+.mesa-chip.ocupada {
+  background: linear-gradient(145deg, #dbeafe, #bfdbfe);
+  border: 2.5px solid #2563eb;
+  box-shadow: 0 4px 10px rgba(0,0,0,.4), 0 0 0 2px rgba(37,99,235,.2), inset 0 1px 0 rgba(255,255,255,.25);
+}
+.mesa-chip.limpieza {
+  background: linear-gradient(145deg, #fef3c7, #fde68a);
+  border: 2.5px solid #d97706;
+}
 
-.chip-nombre  { font-size: .72rem; font-weight: 700; color: #1f2937; }
-.chip-cap     { font-size: .62rem; color: #6b7280; }
-.chip-personas{ font-size: .68rem; font-weight: 600; color: #1e40af; }
-.chip-cleaning{ font-size: .75rem; line-height: 1; }
+.chip-nombre  { font-size: .72rem; font-weight: 800; color: #1c1c1c; letter-spacing: .01em; }
+.chip-cap     { font-size: .62rem; color: #374151; }
+.chip-personas{ font-size: .7rem; font-weight: 700; color: #1e3a8a; }
+.chip-cleaning{ font-size: .8rem; line-height: 1; }
 
 /* ── Tooltip ── */
 .tooltip {

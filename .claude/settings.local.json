@@ -9,7 +9,16 @@
       "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp add src/sheets.js src/bot.js src/ai.js src/index.js)",
       "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp commit -m ' *)",
       "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/admin.js)",
-      "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp add src/admin.js src/index.js src/sheets.js src/bot.js .env.example)"
+      "Bash(git -C /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp add src/admin.js src/index.js src/sheets.js src/bot.js .env.example)",
+      "Bash(npm run *)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/db.js)",
+      "Bash(node --check /mnt/c/Users/tobia/Documents/WhatsappIA/Whatsapp/src/sessions/sessionManager.js)",
+      "Bash(grep -E \"\\\\.js$\")",
+      "Bash(npm show *)",
+      "Bash(node -e \"require\\('./src/bot.js'\\); console.log\\('bot.js OK'\\)\")",
+      "Bash(node -e \"require\\('./src/i18n.js'\\); console.log\\('i18n.js OK'\\)\")",
+      "Bash(node *)",
+      "Bash(git *)"
     ]
   }
 }
