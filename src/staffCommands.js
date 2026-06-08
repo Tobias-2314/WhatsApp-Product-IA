@@ -14,7 +14,9 @@ const AYUDA = `📋 *Comandos disponibles:*
 • \`desbloquear <ID>\` — desbloquea una fecha por ID
 • \`fechas bloqueadas\` — lista fechas bloqueadas
 • \`disponibilidad DD/MM/YYYY\` — franjas disponibles
-• \`stats\` — resumen de hoy`;
+• \`stats\` — resumen de hoy
+• \`mantenimiento on [mensaje]\` — activa modo mantenimiento
+• \`mantenimiento off\` — desactiva modo mantenimiento`;
 
 function fechaAR(offsetDias = 0) {
   const base = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
@@ -125,6 +127,19 @@ async function procesarComandoStaff(sock, telefono, texto) {
         `  • ❌ Canceladas: ${stats.canceladas}\n` +
         `  • ⚠️ No-shows: ${stats.no_shows}`
       );
+    }
+
+    // mantenimiento on [mensaje]
+    if (cmd.startsWith('mantenimiento on') || cmd.startsWith('mantenimiento activar')) {
+      const msg = texto.replace(/mantenimiento\s+(on|activar)\s*/i, '').trim() || null;
+      configManager.setMantenimiento(true, msg);
+      return responder(`🔧 Modo mantenimiento *activado*${msg ? `\nMensaje: "${msg}"` : ''}`);
+    }
+
+    // mantenimiento off
+    if (cmd === 'mantenimiento off' || cmd === 'mantenimiento desactivar') {
+      configManager.setMantenimiento(false);
+      return responder(`✅ Modo mantenimiento *desactivado*. El bot vuelve a recibir reservas.`);
     }
 
     // ayuda (default)

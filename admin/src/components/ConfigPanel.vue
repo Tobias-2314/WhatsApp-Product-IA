@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getConfig, actualizarConfig } from '../api.js'
+import { getConfig, actualizarConfig, getMantenimiento, activarMantenimiento, desactivarMantenimiento } from '../api.js'
 
 const emit = defineEmits(['updated'])
 
@@ -9,6 +9,10 @@ const guardando  = ref(false)
 const error      = ref('')
 const exito      = ref('')
 const seccion    = ref('restaurante')
+
+const mant = ref({ activo: false, mensaje: '' })
+const mantGuardando = ref(false)
+const mantExito = ref('')
 
 const dias = ['lunes','martes','miercoles','jueves','viernes','sabado','domingo']
 const diasLabel = { lunes:'Lunes', martes:'Martes', miercoles:'Miércoles', jueves:'Jueves', viernes:'Viernes', sabado:'Sábado', domingo:'Domingo' }
@@ -53,15 +57,38 @@ function setHorario(dia, campo, valor) {
   }
 }
 
+async function toggleMantenimiento() {
+  mantGuardando.value = true
+  mantExito.value = ''
+  try {
+    if (mant.value.activo) {
+      await desactivarMantenimiento()
+      mant.value.activo = false
+      mantExito.value = '✅ Modo mantenimiento desactivado'
+    } else {
+      await activarMantenimiento(mant.value.mensaje || null)
+      mant.value.activo = true
+      mantExito.value = '🔧 Modo mantenimiento activado'
+    }
+    setTimeout(() => { mantExito.value = '' }, 3000)
+  } catch (e) {
+    error.value = 'Error: ' + e.message
+  } finally {
+    mantGuardando.value = false
+  }
+}
+
 onMounted(async () => {
   cargando.value = true
   try {
-    const data = await getConfig()
-    if (data && Object.keys(data).length) {
+    const [data, mantData] = await Promise.all([getConfig(), getMantenimiento().catch(() => ({ activo: false, mensaje: null }))])
+    mant.value = { activo: mantData.activo, mensaje: mantData.mensaje || '' }
+    const data2 = data
+    if (data2 && Object.keys(data2).length) {
       cfg.value = {
         ...cfg.value,
-        ...data,
-        franjasTexto: (data.franjasHorarias || []).join(', '),
+        ...data2,
+        franjasTexto: (data2.franjasHorarias || []).join(', '),
       }
     }
   } catch (e) {
@@ -122,11 +149,12 @@ async function guardar() {
       <!-- Navegación de secciones -->
       <div class="cp-nav">
         <button v-for="s in [
-          { id:'restaurante', icon:'🏪', label:'Restaurante' },
-          { id:'horarios',    icon:'🕐', label:'Horarios' },
-          { id:'reservas',    icon:'📅', label:'Reservas' },
-          { id:'notif',       icon:'🔔', label:'Notificaciones' },
-          { id:'menu',        icon:'🍽️', label:'Menú' },
+          { id:'restaurante',   icon:'🏪', label:'Restaurante' },
+          { id:'horarios',      icon:'🕐', label:'Horarios' },
+          { id:'reservas',      icon:'📅', label:'Reservas' },
+          { id:'notif',         icon:'🔔', label:'Notificaciones' },
+          { id:'menu',          icon:'🍽️', label:'Menú' },
+          { id:'mantenimiento', icon:'🔧', label:'Mantenimiento' },
         ]" :key="s.id"
           :class="['cp-nav-btn', { active: seccion === s.id }]"
           @click="seccion = s.id"
@@ -255,6 +283,33 @@ async function guardar() {
           <div class="field">
             <textarea v-model="cfg.menu" rows="16" placeholder="🍽️ *MENÚ*&#10;━━━━━━━&#10;• Plato 1 — $1000&#10;• Plato 2 — $1500" class="mono" />
           </div>
+        </div>
+
+        <!-- ── MANTENIMIENTO ── -->
+        <div v-else-if="seccion === 'mantenimiento'" class="cp-section">
+          <h3 class="sec-title">Modo Mantenimiento</h3>
+          <p class="sec-hint">Mientras está activo, el bot responde con el mensaje de abajo y no procesa reservas.</p>
+
+          <div :class="['mant-status', mant.activo ? 'mant-activo' : 'mant-inactivo']">
+            <span class="mant-dot"></span>
+            {{ mant.activo ? 'ACTIVO — el bot está en pausa' : 'INACTIVO — el bot funciona normalmente' }}
+          </div>
+
+          <div class="field">
+            <label>Mensaje para los clientes</label>
+            <input v-model="mant.mensaje" placeholder="Estamos temporalmente cerrados. ¡Volvemos pronto!" />
+            <span class="field-hint">Si está vacío se usa el mensaje por defecto.</span>
+          </div>
+
+          <p v-if="mantExito" :class="mantExito.startsWith('✅') ? 'cp-exito' : 'cp-error'">{{ mantExito }}</p>
+
+          <button
+            :class="['btn-mant', mant.activo ? 'btn-mant-off' : 'btn-mant-on']"
+            :disabled="mantGuardando"
+            @click="toggleMantenimiento"
+          >
+            {{ mantGuardando ? '…' : mant.activo ? '✅ Desactivar mantenimiento' : '🔧 Activar mantenimiento' }}
+          </button>
         </div>
 
       </div>
@@ -391,4 +446,23 @@ async function guardar() {
 }
 .btn-guardar:hover:not(:disabled) { opacity: .88; transform: translateY(-1px); }
 .btn-guardar:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Mantenimiento */
+.mant-status {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; font-weight: 600;
+}
+.mant-activo  { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.mant-inactivo{ background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+.mant-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+.btn-mant {
+  padding: .6rem 1.4rem; border-radius: 8px; border: none;
+  font-size: .875rem; font-family: inherit; font-weight: 700; cursor: pointer; transition: all .15s;
+}
+.btn-mant-on  { background: #dc2626; color: #fff; }
+.btn-mant-on:hover:not(:disabled)  { background: #b91c1c; }
+.btn-mant-off { background: #15803d; color: #fff; }
+.btn-mant-off:hover:not(:disabled) { background: #166534; }
+.btn-mant:disabled { opacity: .5; cursor: default; }
 </style>

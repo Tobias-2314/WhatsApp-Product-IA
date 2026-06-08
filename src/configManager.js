@@ -1,7 +1,10 @@
 // Carga configuración desde DB y cachea. Hace merge con restaurant.js como base.
 const baseConfig = require('../config/restaurant');
-let _pool = null;
+let _pool  = null;
 let _cache = null;
+
+let _mantenimiento = false;
+let _mensajeMantenimiento = null;
 
 function setPool(pool) { _pool = pool; }
 
@@ -31,4 +34,11 @@ async function actualizar(campos) {
   return _cache;
 }
 
-module.exports = { setPool, init, get, actualizar };
+function setMantenimiento(activo, mensaje = null) {
+  _mantenimiento = !!activo;
+  _mensajeMantenimiento = mensaje || null;
+}
+function isMantenimiento()          { return _mantenimiento; }
+function getMensajeMantenimiento()  { return _mensajeMantenimiento; }
+
+module.exports = { setPool, init, get, actualizar, setMantenimiento, isMantenimiento, getMensajeMantenimiento };

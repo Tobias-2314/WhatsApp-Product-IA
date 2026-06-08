@@ -302,6 +302,29 @@ function crearAdminRouter(io = null, cfgManager = null) {
     }
   });
 
+  // ─── MANTENIMIENTO ────────────────────────────────────────
+
+  // GET /admin/api/mantenimiento
+  router.get('/api/mantenimiento', (req, res) => {
+    res.json({
+      activo:  cfgManager.isMantenimiento(),
+      mensaje: cfgManager.getMensajeMantenimiento(),
+    });
+  });
+
+  // POST /admin/api/mantenimiento/activar
+  router.post('/api/mantenimiento/activar', (req, res) => {
+    const { mensaje } = req.body || {};
+    cfgManager.setMantenimiento(true, mensaje || null);
+    res.json({ ok: true });
+  });
+
+  // POST /admin/api/mantenimiento/desactivar
+  router.post('/api/mantenimiento/desactivar', (req, res) => {
+    cfgManager.setMantenimiento(false);
+    res.json({ ok: true });
+  });
+
   // ─── FECHAS BLOQUEADAS ────────────────────────────────────
 
   // GET /admin/api/fechas-bloqueadas

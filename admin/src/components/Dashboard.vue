@@ -7,9 +7,12 @@ import OcupacionPanel from './OcupacionPanel.vue'
 import AnalyticsPanel from './AnalyticsPanel.vue'
 import ConfigPanel from './ConfigPanel.vue'
 import FechasBloqueadasPanel from './FechasBloqueadasPanel.vue'
+import CalendarioPanel from './CalendarioPanel.vue'
+import HoyPanel from './HoyPanel.vue'
+import TimelinePanel from './TimelinePanel.vue'
 import { getStats, getReservas, exportarCSV, clearToken, socket, abrirImpresion, getConfig } from '../api.js'
 
-const tabActiva = ref('reservas')
+const tabActiva = ref('hoy')
 
 // ─── Estado ─────────────────────────────────────────────
 const stats    = ref(null)
@@ -139,8 +142,17 @@ onUnmounted(() => {
       </div>
 
       <nav class="tabs">
+        <button class="tab" :class="{ active: tabActiva === 'hoy' }"            @click="tabActiva = 'hoy'">
+          <span class="tab-icon">⚡</span> Hoy
+        </button>
         <button class="tab" :class="{ active: tabActiva === 'reservas' }"       @click="tabActiva = 'reservas'">
-          <span class="tab-icon">📅</span> Reservas
+          <span class="tab-icon">📋</span> Reservas
+        </button>
+        <button class="tab" :class="{ active: tabActiva === 'calendario' }"    @click="tabActiva = 'calendario'">
+          <span class="tab-icon">📅</span> Calendario
+        </button>
+        <button class="tab" :class="{ active: tabActiva === 'timeline' }"       @click="tabActiva = 'timeline'">
+          <span class="tab-icon">📊</span> Timeline
         </button>
         <button class="tab" :class="{ active: tabActiva === 'ocupacion' }"      @click="tabActiva = 'ocupacion'">
           <span class="tab-icon">🏠</span> Salón
@@ -170,8 +182,11 @@ onUnmounted(() => {
 
     <main class="main">
 
+      <!-- ── PESTAÑA HOY ── -->
+      <HoyPanel v-if="tabActiva === 'hoy'" />
+
       <!-- ── PESTAÑA RESERVAS ── -->
-      <template v-if="tabActiva === 'reservas'">
+      <template v-else-if="tabActiva === 'reservas'">
         <div class="stats" v-if="stats">
           <StatsCard :value="stats.hoy.confirmadas"     label="Confirmadas hoy"  color="#059669" icon="✅" />
           <StatsCard :value="stats.hoy.personas"        label="Personas hoy"     color="#6366f1" icon="👥" />
@@ -228,6 +243,12 @@ onUnmounted(() => {
           <span class="realtime-dot">● En tiempo real</span>
         </p>
       </template>
+
+      <!-- ── PESTAÑA CALENDARIO ── -->
+      <CalendarioPanel v-else-if="tabActiva === 'calendario'" @cancelada="onCancelada" @noshow="onNoShow" />
+
+      <!-- ── PESTAÑA TIMELINE ── -->
+      <TimelinePanel v-else-if="tabActiva === 'timeline'" />
 
       <!-- ── PESTAÑA SALÓN ── -->
       <OcupacionPanel v-else-if="tabActiva === 'ocupacion'" />

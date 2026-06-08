@@ -359,6 +359,14 @@ async function iniciarBot() {
 
       if (!contenido) continue;
 
+      // Modo mantenimiento: responder con mensaje y no procesar
+      if (configManager.isMantenimiento()) {
+        const msgMant = configManager.getMensajeMantenimiento()
+          || 'Estamos temporalmente cerrados. ¡Volvemos pronto!';
+        await sock.sendMessage(`${telefono}@s.whatsapp.net`, { text: msgMant });
+        continue;
+      }
+
       // Staff: comandos directos sin pasar por el bot de reservas
       if (configManager.get().telefonosStaff?.includes(telefono)) {
         logger.info(`👷 [${maskTel(telefono)}] comando staff: ${contenido.substring(0, 40)}`);

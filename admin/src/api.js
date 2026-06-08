@@ -123,6 +123,18 @@ export function abrirImpresion(fecha) {
   window.open(`/admin/api/print?fecha=${encodeURIComponent(fecha)}&token=${token}`)
 }
 
+export function getMantenimiento() {
+  return request('/mantenimiento')
+}
+
+export function activarMantenimiento(mensaje) {
+  return request('/mantenimiento/activar', { method: 'POST', body: JSON.stringify({ mensaje }) })
+}
+
+export function desactivarMantenimiento() {
+  return request('/mantenimiento/desactivar', { method: 'POST', body: JSON.stringify({}) })
+}
+
 export function getFechasBloqueadas() {
   return request('/fechas-bloqueadas')
 }
